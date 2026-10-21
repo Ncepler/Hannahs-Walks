@@ -6,10 +6,15 @@
 #      Actions tab). The site appears at https://<owner>.github.io/<repo>/
 #   3. Optional: Settings > Secrets and variables > Actions > Variables, add NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
 #      to show the in-page map. Pages sites are public, so limit that key to this site's address in Google Cloud.
-#   4. Optional, for Premium: deploy this same repo to a Node host (Vercel works with no setup), set these
-#      there: ANTHROPIC_API_KEY, SESSION_SECRET, PREMIUM_PASSCODE, ALLOWED_ORIGIN=https://<owner>.github.io
-#      Then add the variable NEXT_PUBLIC_API_BASE=https://<that host> here and run this workflow again.
-#      Without NEXT_PUBLIC_API_BASE the Premium tab shows a short "off on this site" notice.
+#   4. Monthly (the chat box) needs a server to hold the Anthropic key. Deploy this same repo to Vercel
+#      (Add New > Project > import the repo; the defaults are right) and set these environment variables there:
+#        ANTHROPIC_API_KEY   your key
+#        ALLOWED_ORIGIN      https://<owner>.github.io
+#        PREMIUM_PASSCODE    optional: the code subscribers type; SESSION_SECRET (any long random text) is
+#                            needed with it
+#      Then add the variable NEXT_PUBLIC_API_BASE = https://<your vercel address> in this repo's Actions
+#      variables and run this workflow again. Until then the chat box says it isn't connected yet.
+#      The Vercel address is itself a complete copy of the app, Monthly included.
 #
 # Pages serves plain files, so the passcode page and the response headers in next.config.ts do not run here.
 # See scripts/build-pages.mjs.

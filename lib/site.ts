@@ -10,5 +10,5 @@ export const STATIC_SITE = process.env.NEXT_PUBLIC_STATIC_SITE === "true";
  */
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/+$/, "");
 
-/** Premium needs a server to plan with: this site's own, or the one named by NEXT_PUBLIC_API_BASE. */
-export const PREMIUM_AVAILABLE = !STATIC_SITE || !!API_BASE;
+/** True when there is a server to plan with: this site's own, or the one named by NEXT_PUBLIC_API_BASE. */
+export const PLANNER_CONNECTED = !STATIC_SITE || !!API_BASE;

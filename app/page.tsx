@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Calculating } from "@/components/Calculating";
 import { Directions } from "@/components/Directions";
-import { BrandMark, Contours } from "@/components/icons";
+import { BrandMark, Contours, RefreshIcon } from "@/components/icons";
 import { ModeToggle, type Mode } from "@/components/ModeToggle";
 import { PasscodeSheet } from "@/components/PasscodeSheet";
 import { PremiumBox } from "@/components/PremiumBox";
-import { PremiumOff } from "@/components/PremiumOff";
 import { Sheet } from "@/components/Sheet";
 import { RouteCard } from "@/components/RouteCard";
 import { emptyForm, STEP_COUNT, Summary, toAnswers, Wizard, type Form } from "@/components/Wizard";
@@ -17,12 +16,12 @@ import { isOneWay, validatePath } from "@/lib/graph";
 import { selectWaypoints } from "@/lib/maps";
 import { apiFetch } from "@/lib/api";
 import { another, plan, routeFromPath, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
-import { PREMIUM_AVAILABLE } from "@/lib/site";
+import { PLANNER_CONNECTED } from "@/lib/site";
 import type { Mood, Pace } from "@/lib/types";
 
 type Phase = "asking" | "calculating" | "result";
 type AiPhase = Phase | "error";
-type AiError = "rate" | "network" | "server";
+type AiError = "rate" | "network" | "server" | "unconnected";
 interface AiResult {
   route: PoolRoute;
   mood: Mood;
@@ -33,6 +32,7 @@ const AI_MESSAGE: Record<AiError, string> = {
   rate: "That's enough planning for today. Try again tomorrow, or switch to regular.",
   network: "Couldn't reach the planner. Check your connection.",
   server: "The planner had a hiccup. Regular mode still works.",
+  unconnected: "Monthly planning isn't connected on this site yet. Regular mode still works.",
 };
 const MOODS: Mood[] = ["clear", "workout", "ponder"];
 const MODE_KEY = "sw_mode";
@@ -52,6 +52,9 @@ export default function Page() {
   const [ai, setAi] = useState<AiResult | null>(null);
   const [aiError, setAiError] = useState<AiError>("server");
   const aiAbort = useRef<AbortController | null>(null);
+  const aiSeen = useRef<string[]>([]); // walks already shown for this note, so a refresh brings a different one
+  const aiAgain = useRef(false); // whether the last request was a refresh, so "Try again" repeats it faithfully
+  const [spins, setSpins] = useState(0);
   const [premiumOK, setPremiumOK] = useState(false);
   const [lockOpen, setLockOpen] = useState(false);
 
@@ -76,7 +79,7 @@ export default function Page() {
   // Remember the last mode. Storage can be blocked, so both directions are guarded.
   useEffect(() => {
     try {
-      if (PREMIUM_AVAILABLE && localStorage.getItem(MODE_KEY) === "premium") {
+      if (PLANNER_CONNECTED && localStorage.getItem(MODE_KEY) === "premium") {
         // Come back to Premium only if it is open to this browser.
         apiFetch("/api/unlock?scope=premium")
           .then((r) => r.json())
@@ -107,7 +110,7 @@ export default function Page() {
 
   /** Premium may ask for a passcode first; the switch waits for it. */
   const requestMode = async (m: Mode) => {
-    if (m === "regular" || premiumOK || !PREMIUM_AVAILABLE) return changeMode(m); // no server to ask
+    if (m === "regular" || premiumOK || !PLANNER_CONNECTED) return changeMode(m); // no server to ask
     try {
       const j = await (await apiFetch("/api/unlock?scope=premium")).json();
       if (!j.required || j.unlocked) {
@@ -168,21 +171,24 @@ export default function Page() {
   }, []);
 
   /** Sends the note to /api/plan. The answer is re-validated here; server numbers are never trusted. */
-  const planAi = async () => {
+  const planAi = async (another: boolean) => {
     const prompt = aiText.trim();
     if (!prompt || aiPhase === "calculating") return;
-    const ac = new AbortController();
-    aiAbort.current = ac;
-    setAiPhase("calculating");
+    aiAgain.current = another;
+    if (!another) aiSeen.current = []; // a new note starts afresh
     const fail = (e: AiError) => {
       setAiError(e);
       setAiPhase("error");
     };
+    if (!PLANNER_CONNECTED) return fail("unconnected");
+    const ac = new AbortController();
+    aiAbort.current = ac;
+    setAiPhase("calculating");
     try {
       const res = await apiFetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, returnHome: aiReturnHome }),
+        body: JSON.stringify({ prompt, returnHome: aiReturnHome, avoid: aiSeen.current }),
         signal: ac.signal,
       });
       if (res.status === 401) {
@@ -196,6 +202,7 @@ export default function Page() {
       const path: string[] = Array.isArray(data.path) ? data.path : [];
       if (!validatePath(path, { oneWay: isOneWay(path) }).ok) return fail("server");
       const moods: Mood[] = data.mood === "clear" || data.mood === "workout" || data.mood === "ponder" ? [data.mood] : [];
+      aiSeen.current = [...aiSeen.current, path.join(">")].slice(-5);
       const found = routeFromPath("AI", String(data.title ?? "Your walk"), "ai", path, moods);
       setAi({ route: found, mood: moods[0] ?? found.moods[0], why: String(data.why ?? ""), caveat: data.caveat ? String(data.caveat) : undefined });
       setAiPhase("result");
@@ -236,6 +243,9 @@ export default function Page() {
   const showAnother = () => {
     if (session) setRoute(another(session));
   };
+  const submitAi = () => planAi(false);
+  const refreshAi = () => planAi(true);
+  const retryAi = () => planAi(aiAgain.current);
 
   const changeAnswers = () => {
     setPhaseBoth("asking");
@@ -284,22 +294,34 @@ export default function Page() {
             />
           </div>
           <div hidden={regular}>
-            {PREMIUM_AVAILABLE ? (
-              <PremiumBox
-                text={aiText}
-                onText={setAiText}
-                returnHome={aiReturnHome}
-                onReturnHome={setAiReturnHome}
-                onSubmit={planAi}
-                busy={aiPhase === "calculating"}
-              />
-            ) : (
-              <PremiumOff onRegular={() => changeMode("regular")} />
-            )}
+            <PremiumBox
+              text={aiText}
+              onText={setAiText}
+              returnHome={aiReturnHome}
+              onReturnHome={setAiReturnHome}
+              onSubmit={submitAi}
+              busy={aiPhase === "calculating"}
+            />
           </div>
         </div>
 
         <div className="pane-right">
+          {resultShown && (
+            <div className="refresh-row">
+              <button
+                type="button"
+                className="btn btn-secondary pressable refresh"
+                onClick={() => {
+                  setSpins((n) => n + 1);
+                  if (regular) showAnother();
+                  else refreshAi();
+                }}
+              >
+                <RefreshIcon turns={spins} />
+                Refresh for new route
+              </button>
+            </div>
+          )}
           {regular ? (
             <>
               {phase === "asking" && <Summary form={form} />}
@@ -335,12 +357,12 @@ export default function Page() {
                     >
                       Use regular mode
                     </button>
-                    {aiError !== "rate" && (
-                      <button type="button" className="btn btn-secondary pressable" onClick={planAi}>
+                    {(aiError === "network" || aiError === "server") && (
+                      <button type="button" className="btn btn-secondary pressable" onClick={retryAi}>
                         Try again
                       </button>
                     )}
-                    {aiError !== "rate" && (
+                    {(aiError === "network" || aiError === "server") && (
                       <button type="button" className="btn btn-text pressable" onClick={() => setAiPhase("asking")}>
                         Edit my note
                       </button>
@@ -354,7 +376,7 @@ export default function Page() {
                   mood={ai.mood}
                   pace="steady"
                   premium={{ why: ai.why, caveat: ai.caveat }}
-                  onAnother={planAi}
+                  onAnother={refreshAi}
                   onChange={() => setAiPhase("asking")}
                   onDirections={() => setDirOpen(true)}
                   startFromHome={startFromHome}

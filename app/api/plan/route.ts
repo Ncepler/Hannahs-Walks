@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
-import { cleanPrompt, DEFAULT_MODEL, planWalk, type PlannerClient } from "@/lib/ai";
+import { cleanAvoid, cleanPrompt, DEFAULT_MODEL, planWalk, type PlannerClient } from "@/lib/ai";
 import { PREMIUM_MAX_CHARS } from "@/lib/config";
 import { corsHeaders, preflight } from "@/lib/cors";
 import { COOKIE, hasAccess, proof } from "@/lib/session";
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
   try {
     // Two attempts at most, so each gets a short leash inside the 30 s the route is allowed.
     const client = new Anthropic({ timeout: 12_000, maxRetries: 0 });
-    const plan = await planWalk(client as unknown as PlannerClient, { prompt, pace, returnHome }, {
+    const plan = await planWalk(client as unknown as PlannerClient, { prompt, pace, returnHome, avoid: cleanAvoid(body?.avoid) }, {
       model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
       signal: req.signal,
     });

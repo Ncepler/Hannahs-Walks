@@ -8,7 +8,7 @@ import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
 import { composeAll, composeOneWay } from '../lib/compose';
 import type Anthropic from '@anthropic-ai/sdk';
-import { buildSystemPrompt, checkPlan, FALLBACK_CAVEAT, inferMood, parseTargets, planWalk, type Ask, type PlannerClient } from '../lib/ai';
+import { buildSystemPrompt, checkPlan, cleanAvoid, FALLBACK_CAVEAT, inferMood, parseTargets, pathSig, planWalk, type Ask, type PlannerClient, type Span } from '../lib/ai';
 import { corsHeaders, preflight } from '../lib/cors';
 import { codeOk, COOKIE, hasAccess, proof, token } from '../lib/session';
 import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
@@ -356,7 +356,8 @@ async function phase5() {
   check('X5', 'a time in the note is held to ±30%', checkPlan({ ...body, path: R('R04') }, ask('about 30 minutes')).ok && !checkPlan({ ...body, path: R('R04') }, ask('about 90 minutes')).ok, 'R04 is ~25 min');
   const t = (s: string) => parseTargets(s);
   const near2 = (a: number | undefined, b: number) => a !== undefined && Math.abs(a - b) < 0.05;
-  check('X5', 'distance and time parsing: 3 miles, 5k, 45 minutes, an hour, an hour and a half, ranges skipped', near2(t('3 miles').miles, 3) && near2(t('5k').miles, 3.11) && near2(t('about 45 minutes').minutes, 45) && near2(t('an hour or so').minutes, 60) && near2(t('an hour and a half').minutes, 90) && near2(t('1.5 hours').minutes, 90) && near2(t('half an hour').minutes, 30) && t('30 to 45 minutes').minutes === undefined && t('I need to stop thinking').minutes === undefined, JSON.stringify([t('5k'), t('an hour and a half')]));
+  const one = (x: Span | undefined, v: number) => !!x && near2(x.lo, v) && near2(x.hi, v);
+  check('X5', 'distance and time parsing: 3 miles, 5k, 45 minutes, an hour, an hour and a half, a 3-mile walk', one(t('3 miles').miles, 3) && one(t('5k').miles, 3.11) && one(t('about 45 minutes').minutes, 45) && one(t('an hour or so').minutes, 60) && one(t('an hour and a half').minutes, 90) && one(t('1.5 hours').minutes, 90) && one(t('half an hour').minutes, 30) && one(t('a 3-mile walk').miles, 3) && one(t('a 30-minute walk').minutes, 30) && one(t('1 hour and 15 minutes').minutes, 75) && t('I need to stop thinking').minutes === undefined && t('I need to stop thinking').miles === undefined, JSON.stringify([t('5k'), t('an hour and a half')]));
   const lib = ['HOME', 'BIRCH_SYC', 'SYC_FIR', 'FIR_CHEST', 'GREEN_CHEST', 'CHEST_NB', 'NB_MUSEUM', 'NB_BEECH', 'NB_WITTES', 'WITTES_BRYANT', 'BRYANT_ON', 'ON_EBWAY', 'LIBRARY'];
   check('X5', 'one-way: a walk finishing at the library passes only when the box is unchecked; a junction finish never does', checkPlan({ ...body, path: lib }, ask('x', { returnHome: false })).ok && !checkPlan({ ...body, path: lib }, ask('x', { returnHome: true })).ok && !checkPlan({ ...body, path: lib.slice(0, 6) }, ask('x', { returnHome: false })).ok, 'ok');
 
@@ -415,6 +416,48 @@ async function phase5() {
   const examples = CURATED.every((c) => sys.includes(`${c.id} | ${c.name} |`));
   const user = JSON.stringify(a.calls[0].messages);
   check('X5', 'system prompt lists all 39 nodes, 48 segments and 22 examples (no example paths), no ZIP, no Walnut', allIds && examples && !/11576|Walnut/i.test(sys) && !/HOME, BIRCH/.test(sys) && /must finish back at HOME/.test(user), `${sys.length} chars, about ${Math.round(sys.length / 4)} tokens`);
+
+  // Distances and times are for the whole walk: "3-4 miles" is a total, never each way
+  const range = (x: Span | undefined, a: number, b: number) => !!x && near2(x.lo, a) && near2(x.hi, b);
+  const rg = (x: string) => parseTargets(x);
+  check('X6', 'ranges are read as totals: 3-4 miles, 3 to 4, between 3 and 4, 3 - 4, 3 or 4, 3-4 mile, 5 to 6 km, 30-45 minutes, 45 minutes to an hour, an hour to an hour and a half, 1-2 hours',
+    range(rg('3-4 miles').miles, 3, 4) && range(rg('about 3 to 4 miles please').miles, 3, 4) && range(rg('between 3 and 4 miles').miles, 3, 4) && range(rg('3–4 mi').miles, 3, 4) && range(rg('3 - 4 miles').miles, 3, 4) && range(rg('3 or 4 miles').miles, 3, 4) && range(rg('a 3-4 mile walk').miles, 3, 4) && range(rg('5 to 6 km').miles, 3.11, 3.73) &&
+      range(rg('30-45 minutes').minutes, 30, 45) && range(rg('45 minutes to an hour').minutes, 45, 60) && range(rg('an hour to an hour and a half').minutes, 60, 90) && range(rg('1-2 hours').minutes, 60, 120),
+    JSON.stringify([rg('3-4 miles'), rg('45 minutes to an hour')]));
+  const two = rg('2 miles and 30 minutes');
+  const both = rg('3-4 miles in about 70 minutes');
+  check('X6', 'two different numbers are not a range: "2 miles and 30 minutes", "3-4 miles in about 70 minutes"', one(two.miles, 2) && one(two.minutes, 30) && range(both.miles, 3, 4) && one(both.minutes, 70), JSON.stringify([two, both]));
+  check('X6', 'only "each way" doubles a figure', one(rg('3 miles each way').miles, 6) && range(rg('3-4 miles each way').miles, 6, 8) && range(rg('3-4 miles').miles, 3, 4), JSON.stringify([rg('3 miles each way'), rg('3-4 miles each way')]));
+
+  const miles = (c: { path: readonly string[] }) => milesOf([...c.path]);
+  const inside = CURATED.find((c) => miles(c) >= 3 && miles(c) <= 4)!;
+  const runsLong = CURATED.find((c) => miles(c) > 4.6)!;
+  const runsShort = CURATED.find((c) => miles(c) < 2.5)!;
+  const trip = ask('a 3-4 mile walk');
+  const longWhy = reject([...runsLong.path], trip);
+  check('X6', `a ${miles(inside).toFixed(1)} mi walk fits "3-4 miles"; a ${miles(runsLong).toFixed(1)} mi one and a ${miles(runsShort).toFixed(1)} mi one are refused, with "in total"`, checkPlan({ ...body, path: [...inside.path] }, trip).ok && /in total/.test(longWhy) && /not each way/.test(longWhy) && /in total/.test(reject([...runsShort.path], trip)), longWhy);
+
+  const long2 = fake([use({ ...body, path: [...runsLong.path] }), use({ ...body, path: [...inside.path] })]);
+  const re = await planWalk(long2.client, trip);
+  const sent = JSON.stringify(long2.calls[0].messages[0]);
+  const sentBack = JSON.stringify(long2.calls[1]?.messages.slice(-1)[0] ?? '');
+  check('X6', 'the request spells out "3 to 4 miles for the whole walk ... not each way"; a long answer is sent back with that, then the right one is taken',
+    /Length: 3 to 4 miles for the whole walk/.test(sent) && /not the distance each way/.test(sent) && /never 3 to 4 miles each way/.test(buildSystemPrompt()) && re.source === 'ai' && long2.calls.length === 2 && /in total/.test(sentBack), `${re.source}, ${long2.calls.length} calls`);
+
+  const f1 = await planWalk(fake([bad]).client, ask('a 3-4 mile walk, somewhere quiet'));
+  const f2 = await planWalk(fake([bad]).client, ask('about 30-45 minutes, flat'));
+  const f2Min = minutesFor(computeStats(f2.path), 'steady');
+  check('X6', 'the fallback also keeps to a range: "3-4 miles" gives 2.7 to 4.4 mi; "30-45 minutes" gives 27 to 50 min', f1.source === 'fallback' && milesOf(f1.path) >= 2.7 && milesOf(f1.path) <= 4.4 && f2.source === 'fallback' && f2Min >= 27 && f2Min <= 49.5, `${milesOf(f1.path).toFixed(1)} mi; ${Math.round(f2Min)} min`);
+
+  // "Another" never repeats a walk that was already shown
+  const sigs = [pathSig(R('R04'))];
+  const seenOk = !checkPlan({ ...body, path: R('R04') }, ask('x', { avoid: sigs })).ok && !checkPlan({ ...body, path: R('R04').reverse() }, ask('x', { avoid: sigs })).ok && checkPlan({ ...body, path: R('R05') }, ask('x', { avoid: sigs })).ok;
+  const g1 = fake([use({ ...body, path: R('R04') }), use({ ...body, path: R('R05') })]);
+  const rg1 = await planWalk(g1.client, ask('a gentle loop', { avoid: sigs }));
+  const f3 = await planWalk(fake([bad]).client, ask('a gentle loop'));
+  const f4 = await planWalk(fake([bad]).client, ask('a gentle loop', { avoid: [pathSig(f3.path)] }));
+  check('X6', 'a walk already shown (or its reverse) is refused; the model is told which ones; the fallback picks another walk under another name; junk in the list is dropped',
+    seenOk && rg1.source === 'ai' && pathSig(rg1.path) === pathSig(R('R05')) && g1.calls.length === 2 && /already shown/.test(JSON.stringify(g1.calls[0].messages[0])) && pathSig(f4.path) !== pathSig(f3.path) && f4.title !== f3.title && cleanAvoid(['HOME>BIRCH_ELM', 'x y', 5, 'HOME>' + 'A>'.repeat(900) + 'B', "HOME>A'; drop"]).join() === 'HOME>BIRCH_ELM', `${rg1.title}; ${f3.title} then ${f4.title}`);
 
   // Passcode cookies
   const saved = { p: process.env.PREMIUM_PASSCODE, s: process.env.SESSION_SECRET };

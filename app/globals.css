@@ -296,6 +296,10 @@ button, a, [role="button"], [role="radio"] {
 .btn-secondary { background: var(--surface-solid); border-color: var(--line); color: var(--ink); }
 .btn-secondary:active:not(:disabled) { background: color-mix(in srgb, var(--ink) 7%, var(--surface-solid)); }
 .btn-text { color: var(--forest); padding: 0 12px; }
+.refresh-row { margin-bottom: 12px; }
+.refresh { width: 100%; gap: 8px; }
+.refresh-icon { flex: none; transition: transform 320ms var(--ease-out); }
+@media (min-width: 1024px) { .refresh { width: auto; } }
 .btn-text:active:not(:disabled) { background: color-mix(in srgb, var(--forest) 12%, transparent); }
 .grow { flex: 1; }
 .bar-gap { flex: 1 1 0; }
@@ -695,7 +699,7 @@ button, a, [role="button"], [role="radio"] {
 
 @media (prefers-reduced-motion: reduce) {
   .pressable:active:not(:disabled), .toggle-opt:active { transform: none; }
-  .toggle-thumb, .switch-thumb, .dot { transition: none; }
+  .toggle-thumb, .switch-thumb, .dot, .refresh-icon { transition: none; }
   .dot[data-active="true"] { transform: none; box-shadow: 0 0 0 2px var(--forest); }
   .stage { transition: opacity 120ms ease; }
   .stage[data-phase="out"], .stage[data-phase="pre"] { transform: none; }
