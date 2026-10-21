@@ -33,6 +33,7 @@ export const COPY = {
     workout: { label: 'Work it out', sub: 'Hills, distance, a pulse.' },
     ponder: { label: 'Stare at the trees & ponder life', sub: 'Pretty places and room to wander.' },
   },
+  returnHome: { label: 'End back at Home', sub: 'A loop, so you never retrace your steps. Uncheck it if you don’t need to walk home.' },
   surprise: 'Surprise me',
   plan: 'Plan my walk',
   planNow: 'Plan it now',

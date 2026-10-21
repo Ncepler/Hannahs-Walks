@@ -77,6 +77,39 @@ export interface Validation {
 /** A walk that does not finish at Home. */
 export const isOneWay = (path: readonly NodeId[]) => path[path.length - 1] !== HOME_ID;
 
+/** Places at the end of a dead-end road: the only way in is the way back out. */
+export const DEAD_ENDS: readonly NodeId[] = Object.keys(nodes).filter((id) => id !== HOME_ID && adj[id].length === 1);
+
+export interface Retrace {
+  /** Segments, other than dead-end spurs, that the walk covers more than once. */
+  repeated: SegmentId[];
+  /** Dead-end places the walk goes into and comes back out of. */
+  spurs: NodeId[];
+}
+
+/** Where a walk doubles back on itself. Walks a path that has already passed `validatePath`. */
+export function retraceOf(path: readonly NodeId[]): Retrace {
+  const times = new Map<SegmentId, number>();
+  for (const t of traverse(path)) times.set(t.seg.id, (times.get(t.seg.id) ?? 0) + 1);
+  const out: Retrace = { repeated: [], spurs: [] };
+  for (const [id, n] of times) {
+    if (n < 2) continue;
+    const { a, b } = segmentById[id];
+    const end = DEAD_ENDS.find((d) => d === a || d === b);
+    // A spur is walked in and out once. Anything more is a repeat like any other.
+    if (end && n === 2) out.spurs.push(end);
+    else out.repeated.push(id);
+  }
+  return out;
+}
+
+/**
+ * A closed loop: the way back is never the way out, so no road is walked twice. The one allowance is
+ * the dead-end road to a place in `allowed`, which can only be visited by walking in and out.
+ */
+export const isClosedLoop = (r: Retrace, allowed: ReadonlySet<NodeId> = new Set()) =>
+  r.repeated.length === 0 && r.spurs.every((id) => allowed.has(id));
+
 /** §5 validation rules 1 - 4. Rule 5 (reversal) is `reversalHolds`. A one-way walk may finish elsewhere. */
 export function validatePath(path: readonly NodeId[], opts: { oneWay?: boolean } = {}): Validation {
   const errors: string[] = [];

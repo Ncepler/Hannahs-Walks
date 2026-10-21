@@ -3,9 +3,9 @@ import { CURATED } from '../data/curated';
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { CLIMB_MIN_PER_100FT, PACE_MIN_PER_MILE } from './config';
-import { computeStats, isOneWay, LANDMARKS, validatePath } from './graph';
+import { computeStats, DEAD_ENDS, isClosedLoop, isOneWay, LANDMARKS, nodes, retraceOf, segmentById, validatePath } from './graph';
 import { whyThisOne } from './describe';
-import { defaultAnswers, rank, type Answers, type DistanceBand, type Hills, type Scored, type Stop } from './score';
+import { defaultAnswers, rank, spurNodesFor, type Answers, type DistanceBand, type Hills, type Scored, type Stop } from './score';
 import type { Mood, NodeId, Pace } from './types';
 
 /* Server side only: imported by app/api/plan/route.ts and by the acceptance script. */
@@ -21,7 +21,7 @@ You may only use the nodes and segments in the MAP below. Never invent a street,
 
 How to answer: call plan_walk exactly once.
 - "path" is a list of node IDs. It starts at HOME and, unless the request says it may finish elsewhere, ends at HOME. Every consecutive pair must be the two ends of one listed segment (either direction).
-- Out-and-backs are fine (walk to a place and return the same way). Do not walk any segment more than twice unless the person asks for hill repeats.
+- When the walk must finish at HOME it is a closed loop: leave by one route and come back by a different one. Never walk a segment twice, so no out-and-backs and no stem that is walked out and back. The one exception is the dead-end road to a place the person asks for (${DEAD_ENDS.join(' and ')}), which can only be walked in and out; never add one unasked. When the person does not need to come back, out-and-backs are fine, but do not walk any segment more than twice unless they ask for hill repeats.
 - Any distance or time in the request is for the whole walk, start to finish, including the way back to HOME. "3 to 4 miles" means the finished walk adds up to 3 to 4 miles in total, never 3 to 4 miles each way, so an out-and-back to a place 3 miles away is too long. Only double a figure when the person says "each way".
 - Match what they asked for: mood, time, distance, hills, places. Use these rates: easy 24, steady 20, brisk 16.5 minutes per mile, plus 3 minutes per 100 ft of climb. Segment elevation change is given from A to B; walking B to A reverses the sign.
 - Prefer segments with traffic=1 for "quiet" or "clear my head" requests. Avoid traffic=3 unless needed to reach a place they asked for.
@@ -229,6 +229,20 @@ export function checkPlan(input: unknown, ask: Ask): Checked {
     return { ok: false, error: 'A walk that does not return to HOME must finish at HOME or at a named place' };
   }
 
+  if (ask.returnHome) {
+    const back = retraceOf(path);
+    const asked = spurNodesFor(stopsIn(ask.prompt));
+    if (!isClosedLoop(back, asked)) {
+      const spur = back.spurs.find((id) => !asked.has(id));
+      return {
+        ok: false,
+        error: back.repeated.length
+          ? `The walk goes along ${segmentById[back.repeated[0]].street} (${back.repeated[0]}) more than once. A walk that ends at HOME must be a closed loop: come back by a different route than you went out, with no segment walked twice.`
+          : `The walk goes in and out of ${nodes[spur!].name}, a dead end the person did not ask for. A walk that ends at HOME must be a closed loop, so leave it out.`,
+      };
+    }
+  }
+
   if (shown(ask.avoid, path)) return { ok: false, error: 'That is the same walk as one already shown. Plan a different one.' };
 
   const stats = computeStats(path);
@@ -278,11 +292,9 @@ export function inferMood(text: string, modelMood?: unknown): Mood {
 
 const BANDS: [number, DistanceBand][] = [[1, '<1'], [2, '1-2'], [3, '2-3'], [5, '3-5']];
 
-function answersFromText(text: string, ask: Ask, modelMood?: unknown): Answers {
-  const mood = inferMood(text, modelMood);
+/** The places the note asks for. */
+export function stopsIn(text: string): Set<Stop> {
   const t = text.toLowerCase();
-  const want = parseTargets(text);
-  const single = (x?: Span) => (x && x.lo === x.hi ? x.lo : null); // a stated range is matched afterwards, not by band
   const stops = new Set<Stop>();
   if (/pond|viaduct/.test(t)) stops.add('pond');
   if (/museum|sculpture/.test(t)) stops.add('museum');
@@ -290,6 +302,14 @@ function answersFromText(text: string, ask: Ask, modelMood?: unknown): Answers {
   if (/library/.test(t)) stops.add('library');
   if (/village|main st/.test(t)) stops.add('village');
   if (/ridge/.test(t)) stops.add('ridge');
+  return stops;
+}
+
+function answersFromText(text: string, ask: Ask, modelMood?: unknown): Answers {
+  const mood = inferMood(text, modelMood);
+  const t = text.toLowerCase();
+  const want = parseTargets(text);
+  const single = (x?: Span) => (x && x.lo === x.hi ? x.lo : null); // a stated range is matched afterwards, not by band
   const hills: Hills = /\bflat\b|no hills|without hills|avoid hills/.test(t) ? 'flat' : /hill|sweat|steep/.test(t) ? 'hilly' : 'any';
   return {
     ...defaultAnswers(mood),
@@ -298,7 +318,7 @@ function answersFromText(text: string, ask: Ask, modelMood?: unknown): Answers {
     time: single(want.minutes) ? { min: single(want.minutes)! } : null,
     distance: single(want.miles) ? (BANDS.find(([max]) => single(want.miles)! < max)?.[1] ?? '5+') : null,
     hills,
-    stops,
+    stops: stopsIn(text),
   };
 }
 
@@ -340,7 +360,7 @@ export const cleanPrompt = (raw: string) =>
 
 function userMessage(ask: Ask): string {
   const end = ask.returnHome
-    ? 'End: the walk must finish back at HOME.'
+    ? 'End: the walk must finish back at HOME as a closed loop. Come back by a different route than you went out, with no segment walked twice.'
     : `End: the person does not need to come back. The walk may finish at HOME or at one of these places: ${LANDMARKS.join(', ')}.`;
   // Said once more in plain numbers, so "3-4 miles" cannot be read as each way.
   const want = parseTargets(ask.prompt);

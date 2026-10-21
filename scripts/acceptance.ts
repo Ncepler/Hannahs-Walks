@@ -8,13 +8,13 @@ import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
 import { composeAll, composeOneWay } from '../lib/compose';
 import type Anthropic from '@anthropic-ai/sdk';
-import { buildSystemPrompt, checkPlan, cleanAvoid, FALLBACK_CAVEAT, inferMood, parseTargets, pathSig, planWalk, type Ask, type PlannerClient, type Span } from '../lib/ai';
+import { buildSystemPrompt, checkPlan, cleanAvoid, FALLBACK_CAVEAT, fallbackPlan, inferMood, parseTargets, pathSig, planWalk, type Ask, type PlannerClient, type Span } from '../lib/ai';
 import { corsHeaders, preflight } from '../lib/cors';
 import { codeOk, COOKIE, hasAccess, proof, token } from '../lib/session';
 import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
 import { embedUrl, mapsLink, selectWaypoints, simulate } from '../lib/maps';
 import { MAPS_MAX_WAYPOINTS } from '../lib/config';
-import { computeStats, isOneWay, LANDMARKS, milesOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
+import { computeStats, isClosedLoop, isOneWay, LANDMARKS, milesOf, retraceOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
 import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
 import type { Mood } from '../lib/types';
 
@@ -165,12 +165,14 @@ function phase2() {
   const base = (mood: Mood, over: Partial<Answers>): Answers => ({ ...defaultAnswers(mood), pace: 'steady', ...over });
   const stops = (...s: Stop[]) => new Set<Stop>(s);
 
-  const a1 = base('clear', { time: { min: 30 }, hills: 'flat', avoidBusy: true });
+  // A9 is the spec's filter pipeline on the whole pool. A flat, quiet half hour and a hilly hour and a half
+  // only exist as out-and-backs here, so these two run with "End back at Home" unchecked (X7 covers the loops).
+  const a1 = base('clear', { time: { min: 30 }, hills: 'flat', avoidBusy: true, returnHome: false });
   const r1 = rank(a1);
   const t1 = r1.ranked[0];
   check('A9', 'clear, 30 min, flat, avoid busy: 24 - 36 min, apm <= 70, busy <= 0.10, nothing relaxed', !!t1 && r1.relaxed.length === 0 && t1.minutes >= 24 && t1.minutes <= 36 && apmOf(t1.route.stats) <= 70 && t1.route.stats.busyShare <= 0.1, `${t1?.route.name}: ${t1?.minutes.toFixed(0)} min, apm ${t1 ? apmOf(t1.route.stats).toFixed(0) : '-'}; ${r1.count} candidates in the pool`);
 
-  const a2 = base('workout', { time: { min: 90 }, hills: 'hilly' });
+  const a2 = base('workout', { time: { min: 90 }, hills: 'hilly', returnHome: false });
   const r2 = rank(a2);
   const t2 = r2.ranked[0];
   check('A9', 'workout, 90 min, hilly: 72 - 108 min, apm > 100, nothing relaxed', !!t2 && r2.relaxed.length === 0 && t2.minutes >= 72 && t2.minutes <= 108 && apmOf(t2.route.stats) > 100, `${t2?.route.name}: ${t2?.minutes.toFixed(0)} min, apm ${t2 ? apmOf(t2.route.stats).toFixed(0) : '-'}; ${r2.count} candidates in the pool`);
@@ -258,6 +260,44 @@ function oneWay() {
     if (n < 1 || checked !== 0) missing++;
   }
   check('X3', 'unchecked, 60 min: each mood gets at least one one-way pick of 5; checked gets none', missing === 0, shown.join(', '));
+
+  // X7: checked means a closed loop. The way back is never the way out, so no street is walked twice.
+  const doubled: string[] = [];
+  const loopOnly = (what: string, walk: readonly string[], allowed = new Set<string>()) => {
+    if (!isClosedLoop(retraceOf(walk), allowed)) doubled.push(what);
+  };
+  let looked = 0;
+  for (const mood of ['clear', 'workout', 'ponder'] as const) {
+    for (const extra of [{}, { time: { min: 60 } }, { hills: 'rolling' as const }, { distance: '3-5' as const }]) {
+      const answers: Answers = { ...defaultAnswers(mood), ...extra };
+      for (const s of rank(answers).ranked) {
+        loopOnly(`${mood}:${s.route.id}`, s.route.path);
+        looked++;
+      }
+    }
+    const session = plan(defaultAnswers(mood));
+    loopOnly(`${mood}: first result`, session.current.path);
+    for (let i = 0; i < 100; i++) loopOnly(`${mood}: another #${i}`, another(session).path);
+  }
+  check('X7', 'checked: every ranked walk, every first result and 300 show-another calls is a closed loop', doubled.length === 0 && looked > 0, doubled.slice(0, 4).join('; ') || `${looked} ranked walks, none doubles back`);
+
+  // The curated out-and-backs and lollipops are still in the pool; they are just not offered while the box is checked.
+  const curatedDoubling = getPool().routes.filter((r) => r.origin === 'curated' && !isClosedLoop(r.retrace)).map((r) => r.id);
+  const offered = new Set(rank(defaultAnswers('ponder')).ranked.map((s) => s.route.id));
+  check('X7', 'checked: curated out-and-backs and the Chestnut lollipop are not offered; the true curated loops are', curatedDoubling.length >= 10 && curatedDoubling.every((id) => !offered.has(id)) && ['R01', 'R04', 'R05', 'R09', 'R10', 'R11', 'R14', 'R15', 'R16', 'R17'].every((id) => offered.has(id)), `${curatedDoubling.length} held back (${curatedDoubling.slice(0, 4).join(', ')}, ...)`);
+
+  // The museum and Cedarmere sit at the ends of dead-end roads, so a walk to one has to go in and out. That is
+  // allowed only for a place the person picked.
+  const museum = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum']) });
+  const museumOk = museum.relaxed.length === 0 && museum.ranked.length > 0 && museum.ranked.every((s) => s.route.visited.has('NCMA') && !s.route.visited.has('CEDARMERE') && isClosedLoop(s.route.retrace, new Set(['NCMA'])));
+  const both = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum', 'cedarmere']) });
+  const bothOk = both.relaxed.length === 0 && both.ranked.length > 0 && both.ranked.every((s) => s.route.visited.has('NCMA') && s.route.visited.has('CEDARMERE') && isClosedLoop(s.route.retrace, new Set(['NCMA', 'CEDARMERE'])));
+  const unasked = rank(defaultAnswers('ponder')).ranked.filter((s) => s.route.visited.has('NCMA') || s.route.visited.has('CEDARMERE')).length;
+  check('X7', 'checked: a picked museum or Cedarmere is reached by its dead-end road only; nobody walks one unasked', museumOk && bothOk && unasked === 0, `museum ${museum.ranked.length} walks, museum + Cedarmere ${both.ranked.length}, unasked ${unasked}`);
+
+  // Unchecked is as before: walks that double back are still on offer.
+  const free = rank({ ...defaultAnswers('clear'), returnHome: false }).ranked;
+  check('X7', 'unchecked: out-and-backs and lollipops are still offered, beside the one-way walks', free.some((s) => retraceOf(s.route.path).repeated.length > 0) && free.some((s) => isOneWay(s.route.path)), `${free.filter((s) => retraceOf(s.route.path).repeated.length > 0).length} double back, ${free.filter((s) => isOneWay(s.route.path)).length} one-way`);
 }
 
 function phase4() {
@@ -393,12 +433,14 @@ async function phase5() {
   check('X5', 'a bad answer is retried once with the specific error as an is_error tool_result', rb.source === 'ai' && b.calls.length === 2 && toolResult?.type === 'tool_result' && toolResult.is_error === true && /does not exist/.test(String(toolResult.content)) && retry[retry.length - 2]?.role === 'assistant', `${b.calls.length} calls; "${toolResult?.content}"`);
 
   const c = fake([bad]);
-  const rc = await planWalk(c.client, ask('Hilly. I want to sweat, an hour or so.'));
+  // The hilly loops here are short (about 35 minutes), so that is what the note asks for.
+  const rc = await planWalk(c.client, ask('Hilly. I want to sweat, about 35 minutes.'));
   const rcStats = computeStats(rc.path);
-  check('X5', 'two bad answers fall back to the regular engine with the exact caveat; the walk is valid and fits the note', rc.source === 'fallback' && c.calls.length === 2 && rc.caveat === FALLBACK_CAVEAT && validatePath(rc.path).ok && rc.mood === 'workout' && apmOf(rcStats) > 100 && minutesFor(rcStats, 'steady') >= 48 && minutesFor(rcStats, 'steady') <= 72, `${rc.title}: ${rcStats.miles.toFixed(1)} mi, ${Math.round(minutesFor(rcStats, 'steady'))} min`);
+  check('X5', 'two bad answers fall back to the regular engine with the exact caveat; the walk is valid and fits the note', rc.source === 'fallback' && c.calls.length === 2 && rc.caveat === FALLBACK_CAVEAT && validatePath(rc.path).ok && rc.mood === 'workout' && apmOf(rcStats) > 100 && minutesFor(rcStats, 'steady') >= 28 && minutesFor(rcStats, 'steady') <= 42, `${rc.title}: ${rcStats.miles.toFixed(1)} mi, ${Math.round(minutesFor(rcStats, 'steady'))} min`);
 
   const d = fake([message([{ type: 'text', text: 'no tool' }])]);
-  const rd = await planWalk(d.client, ask('Flat and quiet, about 30 minutes, I need to stop thinking.'));
+  // No flat, quiet half-hour loop exists on this map, so the box is unchecked for this one.
+  const rd = await planWalk(d.client, ask('Flat and quiet, about 30 minutes, I need to stop thinking.', { returnHome: false }));
   const rdStats = computeStats(rd.path);
   check('X5', 'no tool call twice: falls back; "flat and quiet, about 30 minutes" gives a flat quiet walk of 24 - 36 min', rd.source === 'fallback' && d.calls.length === 2 && rd.mood === 'clear' && apmOf(rdStats) <= 70 && minutesFor(rdStats, 'steady') >= 24 && minutesFor(rdStats, 'steady') <= 36 && rdStats.busyShare <= 0.1, `${rd.title}: ${Math.round(minutesFor(rdStats, 'steady'))} min`);
 
@@ -416,6 +458,24 @@ async function phase5() {
   const examples = CURATED.every((c) => sys.includes(`${c.id} | ${c.name} |`));
   const user = JSON.stringify(a.calls[0].messages);
   check('X5', 'system prompt lists all 39 nodes, 48 segments and 22 examples (no example paths), no ZIP, no Walnut', allIds && examples && !/11576|Walnut/i.test(sys) && !/HOME, BIRCH/.test(sys) && /must finish back at HOME/.test(user), `${sys.length} chars, about ${Math.round(sys.length / 4)} tokens`);
+
+  // X7: a walk that ends at HOME must be a closed loop, in the validator, the prompt and the fallback
+  const outAndBack = reject(R('R08'), ask('a walk'));
+  const lollipop = reject(R('R06'), ask('a walk'));
+  const museumLoop = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum']) }).ranked[0].route.path;
+  check('X7', 'checkPlan: an out-and-back or a lollipop is refused with the street and "closed loop"; a real loop and the unchecked box pass', /Birch Dr/.test(outAndBack) && /closed loop/.test(outAndBack) && /closed loop/.test(lollipop) && lollipop !== 'ACCEPTED' && checkPlan({ ...body, path: R('R04') }, ask('a walk')).ok && checkPlan({ ...body, path: R('R08') }, ask('a walk', { returnHome: false })).ok, outAndBack);
+  check('X7', 'checkPlan: a dead-end spur is fine for a place the note names and refused for one it does not', checkPlan({ ...body, path: museumLoop }, ask('something by the museum')).ok && /dead end/.test(reject(museumLoop, ask('a walk'))) && /closed loop/.test(reject(R('R12'), ask('the museum, please'))), reject(museumLoop, ask('a walk')));
+  const retried = fake([use({ ...body, path: R('R08') }), good]);
+  const rRetry = await planWalk(retried.client, ask('a gentle loop'));
+  const retryMsgs = retried.calls[1]?.messages ?? [];
+  const retryErr = (retryMsgs[retryMsgs.length - 1]?.content as { content?: string }[] | undefined)?.[0]?.content;
+  const sysText = buildSystemPrompt();
+  const userText = (calls: Anthropic.MessageCreateParamsNonStreaming[]) => JSON.stringify(calls[0].messages);
+  const openAsk = fake([good]);
+  await planWalk(openAsk.client, ask('a gentle loop', { returnHome: false }));
+  check('X7', 'an out-and-back answer is sent back with the reason; the prompt and the request both say closed loop, and the unchecked request does not', rRetry.source === 'ai' && retried.calls.length === 2 && /closed loop/.test(String(retryErr)) && /closed loop/.test(sysText) && !/Out-and-backs are fine \(walk to a place/.test(sysText) && /closed loop/.test(userText(retried.calls)) && !/closed loop/.test(userText(openAsk.calls)), `${retried.calls.length} calls; "${String(retryErr).slice(0, 60)}..."`);
+  const fb = fallbackPlan(ask('Flat and quiet, about 30 minutes, I need to stop thinking.'));
+  check('X7', 'the fallback is a closed loop too, even when nothing fits the note exactly', validatePath(fb.path).ok && isClosedLoop(retraceOf(fb.path)), `${fb.title}: ${milesOf(fb.path).toFixed(1)} mi`);
 
   // Distances and times are for the whole walk: "3-4 miles" is a total, never each way
   const range = (x: Span | undefined, a: number, b: number) => !!x && near2(x.lo, a) && near2(x.hi, b);
@@ -445,7 +505,8 @@ async function phase5() {
     /Length: 3 to 4 miles for the whole walk/.test(sent) && /not the distance each way/.test(sent) && /never 3 to 4 miles each way/.test(buildSystemPrompt()) && re.source === 'ai' && long2.calls.length === 2 && /in total/.test(sentBack), `${re.source}, ${long2.calls.length} calls`);
 
   const f1 = await planWalk(fake([bad]).client, ask('a 3-4 mile walk, somewhere quiet'));
-  const f2 = await planWalk(fake([bad]).client, ask('about 30-45 minutes, flat'));
+  // Flat and quiet for 30 - 45 minutes is not a loop on this map either (see above).
+  const f2 = await planWalk(fake([bad]).client, ask('about 30-45 minutes, flat', { returnHome: false }));
   const f2Min = minutesFor(computeStats(f2.path), 'steady');
   check('X6', 'the fallback also keeps to a range: "3-4 miles" gives 2.7 to 4.4 mi; "30-45 minutes" gives 27 to 50 min', f1.source === 'fallback' && milesOf(f1.path) >= 2.7 && milesOf(f1.path) <= 4.4 && f2.source === 'fallback' && f2Min >= 27 && f2Min <= 49.5, `${milesOf(f1.path).toFixed(1)} mi; ${Math.round(f2Min)} min`);
 

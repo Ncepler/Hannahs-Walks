@@ -140,7 +140,7 @@ export function summaryRows(f: Form): { label: string; value: string }[] {
     rows.push({ label: "Pace", value: labelOf(PACE_OPTS, pace)!.label });
     const busy = f.avoidBusy ?? f.mood === "clear";
     if (busy) rows.push({ label: "Roads", value: "Keeping off busy roads" });
-    rows.push({ label: "Finish", value: (f.returnHome ?? true) ? "Back at Home" : "Anywhere, one-way walks included" });
+    rows.push({ label: "Finish", value: (f.returnHome ?? true) ? "Back at Home, as a loop" : "Anywhere, one-way walks included" });
   }
   return rows;
 }
@@ -322,8 +322,8 @@ export function Wizard({ step, form, onForm, onStep, onPlan, onSurprise }: Props
             <CheckRow
               checked={returnHome}
               onChange={(v) => onForm({ returnHome: v })}
-              label="End back at Home"
-              sub="Uncheck it if you don’t need to walk home."
+              label={COPY.returnHome.label}
+              sub={COPY.returnHome.sub}
             />
           </>
         )}

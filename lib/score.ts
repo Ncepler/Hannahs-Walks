@@ -1,7 +1,7 @@
 import { CURATED } from '../data/curated';
 import { CLIMB_MIN_PER_100FT, PACE_MIN_PER_MILE } from './config';
 import { composeAll, composeOneWay } from './compose';
-import { computeStats, isOneWay, traverse } from './graph';
+import { computeStats, DEAD_ENDS, isClosedLoop, isOneWay, retraceOf, traverse, type Retrace } from './graph';
 import type { Mood, NodeId, Pace, Route, RouteStats, SegmentId, WalkKind } from './types';
 
 export const clamp = (x: number, a = 0, b = 1) => Math.max(a, Math.min(b, x));
@@ -130,6 +130,8 @@ function tagsFor(s: RouteStats, kind: WalkKind): string {
 export interface PoolRoute extends Route {
   segSet: ReadonlySet<SegmentId>;
   visited: ReadonlySet<NodeId>;
+  /** Where the walk doubles back on itself; a closed loop has none. */
+  retrace: Retrace;
   scores: Record<Mood, number>;
 }
 
@@ -143,6 +145,7 @@ function finish(r: Omit<Route, 'stats'> & { moods?: Mood[] }, stats: RouteStats)
     stats,
     segSet: new Set(traverse(r.path).map((t) => t.seg.id)),
     visited: new Set(r.path),
+    retrace: retraceOf(r.path),
     scores,
   };
 }
@@ -250,7 +253,7 @@ export interface TimeChoice {
 
 export interface Answers {
   mood: Mood;
-  /** The "End back at Home" box. On by default; off also considers one-way walks. */
+  /** The "End back at Home" box. On by default, and then every walk is a closed loop; off also considers one-way walks and out-and-backs. */
   returnHome: boolean;
   time: TimeChoice | null;
   distance: DistanceBand | null;
@@ -282,6 +285,9 @@ const STOP_NODES: Record<Stop, readonly NodeId[]> = {
   ridge: ['POPLAR_ASH'],
   pond: ['VILLAGE', 'VIADUCT'],
 };
+/** The dead-end places among the chosen stops: a walk to one has to be walked in and out. */
+export const spurNodesFor = (stops: Iterable<Stop>): Set<NodeId> =>
+  new Set([...stops].flatMap((s) => STOP_NODES[s]).filter((id) => DEAD_ENDS.includes(id)));
 const STOP_LABEL: Record<Stop, string> = {
   village: 'Roslyn village',
   museum: 'the museum grounds',
@@ -370,7 +376,11 @@ export interface Candidates {
 
 export function rank(a: Answers): Candidates {
   const { routes, oneWay } = getPool();
-  const all = (a.returnHome ? routes : [...routes, ...oneWay]).map((route) => ({ route, minutes: minutesFor(route.stats, a.pace) }));
+  // Ending back at Home means a loop: the way back is never the way out. The one allowance is the
+  // dead-end road to a museum or Cedarmere the person picked, which can only be walked in and out.
+  const spurs = spurNodesFor(a.stops);
+  const open = a.returnHome ? routes.filter((r) => isClosedLoop(r.retrace, spurs)) : [...routes, ...oneWay];
+  const all = open.map((route) => ({ route, minutes: minutesFor(route.stats, a.pace) }));
   const filters = buildFilters(a);
   const active = filters.filter((f) => f.active);
   const relaxed: string[] = [];

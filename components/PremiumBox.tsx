@@ -79,7 +79,7 @@ export function PremiumBox({
           </button>
         ))}
       </div>
-      <CheckRow checked={returnHome} onChange={onReturnHome} label="End back at Home" sub="Uncheck it if you don’t need to walk home." />
+      <CheckRow checked={returnHome} onChange={onReturnHome} label={COPY.returnHome.label} sub={COPY.returnHome.sub} />
       <div className="bar">
         <span className="bar-gap" />
         <button type="button" className="btn btn-primary pressable grow" onClick={submit} disabled={empty || busy}>
