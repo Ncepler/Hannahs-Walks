@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* ---------- Tokens (§15.1, §15.5) ---------- */
+:root {
+  color-scheme: light dark;
+  --bg: #F5F2EA;           /* paper */
+  --bg-2: #ECE7DA;
+  --surface: rgb(255 255 255 / 0.72);
+  --surface-solid: #FFFFFF;
+  --ink: #16241C;
+  --ink-2: #4A5A50;
+  --line: rgb(22 36 28 / 0.12);
+  --forest: #2C5A44;       /* primary action, links */
+  --on-forest: #F5F2EA;
+  --clear: #4F8F99;        /* mood: clear my head   (mist) */
+  --workout: #BF5B3A;      /* mood: work it out     (clay) */
+  --ponder: #5E8A57;       /* mood: ponder          (moss) */
+  --sun: #D8A23A;          /* highlights, pause points */
+  --shadow: 0 1px 2px rgb(22 36 28 / 0.06), 0 8px 24px rgb(22 36 28 / 0.08);
+
+  /* material (§15.4) */
+  --edge: rgb(255 255 255 / 0.4);
+  --blur-chip: 12px;
+  --blur-bar: 20px;
+  --blur-sheet: 28px;
+
+  /* motion (§15.5) */
+  --ease-out:     cubic-bezier(0.23, 1, 0.32, 1);    /* default: entering, exiting, feedback */
+  --ease-in-out:  cubic-bezier(0.77, 0, 0.175, 1);   /* things that move on screen */
+  --ease-drawer:  cubic-bezier(0.32, 0.72, 0, 1);    /* sheet/drawer, iOS-like */
+  --dur-press: 120ms; --dur-chip: 160ms; --dur-toggle: 220ms;
+  --dur-step-out: 140ms; --dur-step-in: 220ms; --dur-card: 300ms; --dur-sheet: 380ms;
+
+  /* type (§15.3) */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0E1612; --bg-2: #141F19;
+    --surface: rgb(26 38 31 / 0.66); --surface-solid: #172219;
+    --ink: #EAF0E8; --ink-2: #A9B8AE; --line: rgb(234 240 232 / 0.14);
+    --forest: #7DBE9A; --on-forest: #0E1612;
+    --clear: #7FC3CD; --workout: #E08A66; --ponder: #8FBF86; --sun: #E8B957;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+    --edge: rgb(255 255 255 / 0.08);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --surface: var(--surface-solid);
+    --edge: transparent;
+    --blur-chip: 0px; --blur-bar: 0px; --blur-sheet: 0px;
+  }
+}
+@media (prefers-contrast: more) {
+  :root {
+    --surface: var(--surface-solid);
+    --line: var(--ink);
+    --ink-2: var(--ink);
+    --blur-chip: 0px; --blur-bar: 0px; --blur-sheet: 0px;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-solid: var(--surface-solid);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-line: var(--line);
+  --color-forest: var(--forest);
+  --color-on-forest: var(--on-forest);
+  --color-clear: var(--clear);
+  --color-workout: var(--workout);
+  --color-ponder: var(--ponder);
+  --color-sun: var(--sun);
+  --font-sans: var(--font-ui);
+  --font-display: var(--font-display);
+}
+
+/* ---------- Base (§15.8) ---------- */
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  line-height: 1.5;
+  letter-spacing: 0;
+  font-optical-sizing: auto;
+  text-wrap: pretty;
+  min-height: 100dvh;
+  overflow-x: clip;
+}
+input, textarea, select { font-size: 16px; }
+button, a, [role="button"], [role="radio"] {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 2px;
+  transition: none;
+}
