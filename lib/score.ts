@@ -444,28 +444,38 @@ export function plan(answers: Answers, rng: () => number = freshRng()): PlanSess
   return session;
 }
 
-/** "Show me another": remaining picks first, then a re-roll from the next 40. Never the same route twice in a row. */
+/**
+ * "Show me another": remaining picks first, then a re-roll from the next 40.
+ * Never the same route twice in a row, and not one that carries the same name either, since
+ * different routes can share a name (§8.3) and would look like a repeat. The name rule gives
+ * way before the id rule does.
+ */
 export function another(session: PlanSession): PoolRoute {
   const bad = new Set(recentIds());
   bad.add(session.current.id);
-  const take = (avoid: ReadonlySet<string>) => {
-    const i = session.queue.findIndex((p) => !avoid.has(p.route.id));
-    return i === -1 ? undefined : session.queue.splice(i, 1)[0];
+
+  const search = (sameNameOk: boolean) => {
+    const take = () => {
+      const i = session.queue.findIndex(
+        (p) => !bad.has(p.route.id) && (sameNameOk || p.route.name !== session.current.name),
+      );
+      return i === -1 ? undefined : session.queue.splice(i, 1)[0];
+    };
+    let found = take();
+    const windows = Math.max(1, Math.ceil(session.ranked.length / 40));
+    for (let w = 0; !found && w < windows; w++) {
+      session.windowStart += 40;
+      if (session.windowStart >= session.ranked.length) session.windowStart = 0;
+      session.queue = diversePicks(session.ranked, session.windowStart);
+      found = take();
+    }
+    return found;
   };
 
-  let pick = take(bad);
-  const windows = Math.max(1, Math.ceil(session.ranked.length / 40));
-  for (let w = 0; !pick && w < windows; w++) {
-    session.windowStart += 40;
-    if (session.windowStart >= session.ranked.length) session.windowStart = 0;
-    session.queue = diversePicks(session.ranked, session.windowStart);
-    pick = take(bad);
-  }
+  let pick = search(false) ?? search(true);
   if (!pick) {
     // Everything left was shown recently: settle for anything other than the current route.
-    const only = new Set([session.current.id]);
-    session.queue = session.ranked.filter((s) => s.route.id !== session.current.id).slice(0, 5);
-    pick = take(only);
+    pick = session.ranked.find((s) => s.route.id !== session.current.id);
   }
   if (pick) {
     session.current = pick.route;

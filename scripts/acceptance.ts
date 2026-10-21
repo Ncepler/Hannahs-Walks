@@ -195,6 +195,19 @@ function phase2() {
     }
   }
   check('A10', '100 "Show me another" calls on 4 different sessions never repeat a route back to back', repeats.length === 0, repeats.join(',') || '400 calls, 0 repeats');
+
+  // Different routes can share a name, so a name repeat reads as a repeat. Checked where alternatives are plentiful.
+  const sameName: string[] = [];
+  for (const answers of [defaultAnswers('ponder'), defaultAnswers('workout'), defaultAnswers('clear')]) {
+    const session = plan(answers);
+    let prev = session.current.name;
+    for (let i = 0; i < 100; i++) {
+      const next = another(session).name;
+      if (next === prev) sameName.push(`${answers.mood}@${i}`);
+      prev = next;
+    }
+  }
+  check('A10', 'and never repeat a route name back to back where other routes exist (3 broad sessions)', sameName.length === 0, sameName.join(',') || '300 calls, 0 repeated names');
 }
 
 phase1();
