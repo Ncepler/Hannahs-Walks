@@ -1,5 +1,5 @@
 import { COMPOSE_MAX_MILES, COMPOSE_MIN_MILES, HOME_ID } from './config';
-import { adj, milesOf, nodes } from './graph';
+import { adj, LANDMARKS, milesOf, nodes } from './graph';
 import type { NodeId, WalkKind } from './types';
 
 export interface ComposedWalk {
@@ -143,4 +143,22 @@ export function composeAll(): Composition {
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   cached = { cycles: cycles.size, walks: [...walks.values()], ms: t1 - t0 };
   return cached;
+}
+
+let cachedOneWay: ComposedWalk[] | undefined;
+
+/**
+ * One-way walks (not in the spec's §8): every simple path from HOME of up to 5 km that finishes at
+ * a named place. Same stem search the composer already runs; nothing new on the map.
+ */
+export function composeOneWay(): ComposedWalk[] {
+  if (cachedOneWay) return cachedOneWay;
+  cachedOneWay = simplePaths(HOME_ID, 5000)
+    .filter((p) => LANDMARKS.includes(p[p.length - 1]))
+    .filter((p) => {
+      const miles = milesOf(p);
+      return miles >= COMPOSE_MIN_MILES && miles <= COMPOSE_MAX_MILES;
+    })
+    .map((path) => ({ path, kind: 'one-way' as const }));
+  return cachedOneWay;
 }

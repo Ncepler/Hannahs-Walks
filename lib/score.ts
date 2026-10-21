@@ -1,7 +1,7 @@
 import { CURATED } from '../data/curated';
 import { CLIMB_MIN_PER_100FT, PACE_MIN_PER_MILE } from './config';
-import { composeAll } from './compose';
-import { computeStats, traverse } from './graph';
+import { composeAll, composeOneWay } from './compose';
+import { computeStats, isOneWay, traverse } from './graph';
 import type { Mood, NodeId, Pace, Route, RouteStats, SegmentId, WalkKind } from './types';
 
 export const clamp = (x: number, a = 0, b = 1) => Math.max(a, Math.min(b, x));
@@ -55,6 +55,7 @@ const KIND_LABEL: Record<WalkKind, string> = {
   loop: 'Loop',
   'out-and-back': 'Out-and-Back',
   lollipop: 'Lollipop',
+  'one-way': 'One Way',
   custom: 'Walk',
 };
 
@@ -72,6 +73,10 @@ function topStreets(path: readonly NodeId[], skip?: string): string[] {
 }
 
 export function nameFor(path: readonly NodeId[], kind: WalkKind, stats: RouteStats): string {
+  if (kind === 'one-way') {
+    const end = path[path.length - 1];
+    return `${POI_SHORT[end]} via ${topStreets(path, end === 'NCMA' ? 'Museum' : undefined)[0]}, one way`;
+  }
   const poi = POI_PRIORITY.find((id) => stats.pois.includes(id));
   // "Museum grounds via Museum" says nothing, so the museum's own access road is skipped.
   if (poi) return `${POI_SHORT[poi]} via ${topStreets(path, poi === 'NCMA' ? 'Museum' : undefined)[0]}`;
@@ -90,13 +95,23 @@ const BLURB_POI: Record<string, string> = {
   POPLAR_W: 'over the ridge',
 };
 
-export function blurbFor(s: RouteStats): string {
+const END_PHRASE: Record<string, string> = {
+  LIBRARY: 'the library',
+  VILLAGE: 'Roslyn village',
+  VIADUCT: 'the viaduct',
+  NCMA: 'the museum grounds',
+  CEDARMERE: 'Cedarmere',
+};
+
+export function blurbFor(s: RouteStats, finish?: NodeId): string {
   const apm = apmOf(s);
   const hills = apm > 100 ? 'A steady climb' : apm >= 70 ? 'A rolling walk' : 'A mostly flat walk';
   const traffic = s.quietShare >= 0.8 ? ' on quiet streets' : s.busyShare >= 0.2 ? ' with some time on busy roads' : ', mostly residential';
-  const places = s.pois.map((id) => BLURB_POI[id]).filter(Boolean).slice(0, 3);
+  // The finish is said once, in its own sentence.
+  const places = s.pois.filter((id) => id !== finish).map((id) => BLURB_POI[id]).filter(Boolean).slice(0, 3);
   const tail = places.length > 1 ? `, ${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}` : places.length ? `, ${places[0]}` : '';
-  return `${hills}${traffic}${tail}.`;
+  const sentence = `${hills}${traffic}${tail}.`;
+  return finish && END_PHRASE[finish] ? `${sentence} You finish at ${END_PHRASE[finish]}, not at Home.` : sentence;
 }
 
 function tagsFor(s: RouteStats, kind: WalkKind): string {
@@ -140,6 +155,8 @@ const directedKey = (path: readonly NodeId[]) =>
 
 export interface Pool {
   routes: PoolRoute[];
+  /** Walks that finish at a named place instead of Home. Only offered when the box is unchecked. */
+  oneWay: PoolRoute[];
   curated: number;
   composed: number;
   /** Composed walks dropped because a curated route covers the same segments the same way. */
@@ -185,7 +202,25 @@ export function getPool(): Pool {
       ),
     );
   }
-  pool = { routes, curated: CURATED.length, composed: n, duplicatesDropped: dropped };
+  const oneWay = [...composeOneWay()]
+    .sort((a, b) => (a.path.join('>') < b.path.join('>') ? -1 : 1))
+    .map((w, i) => {
+      const stats = computeStats(w.path);
+      return finish(
+        {
+          id: `W${String(i + 1).padStart(4, '0')}`,
+          name: nameFor(w.path, w.kind, stats),
+          origin: 'generated',
+          path: w.path,
+          moods: [],
+          blurb: blurbFor(stats, w.path[w.path.length - 1]),
+          tags: tagsFor(stats, w.kind),
+          kind: w.kind,
+        },
+        stats,
+      );
+    });
+  pool = { routes, oneWay, curated: CURATED.length, composed: n, duplicatesDropped: dropped };
   return pool;
 }
 
@@ -215,6 +250,8 @@ export interface TimeChoice {
 
 export interface Answers {
   mood: Mood;
+  /** The "End back at Home" box. On by default; off also considers one-way walks. */
+  returnHome: boolean;
   time: TimeChoice | null;
   distance: DistanceBand | null;
   hills: Hills;
@@ -227,6 +264,7 @@ export interface Answers {
 export function defaultAnswers(mood: Mood): Answers {
   return {
     mood,
+    returnHome: true,
     time: null,
     distance: null,
     hills: 'any',
@@ -311,6 +349,8 @@ function prefFit(r: PoolRoute, a: Answers): number {
     fits.push(1 - clamp(gap / 2));
   }
   if (a.avoidBusy) fits.push(1 - clamp((r.stats.busyShare - 0.1) / 0.3));
+  // Unchecking "End back at Home" says finishing elsewhere is welcome, so one-way walks are preferred.
+  if (!a.returnHome) fits.push(isOneWay(r.path) ? 1 : 0);
   return fits.length ? fits.reduce((x, y) => x + y, 0) / fits.length : 1;
 }
 
@@ -329,7 +369,8 @@ export interface Candidates {
 }
 
 export function rank(a: Answers): Candidates {
-  const all = getPool().routes.map((route) => ({ route, minutes: minutesFor(route.stats, a.pace) }));
+  const { routes, oneWay } = getPool();
+  const all = (a.returnHome ? routes : [...routes, ...oneWay]).map((route) => ({ route, minutes: minutesFor(route.stats, a.pace) }));
   const filters = buildFilters(a);
   const active = filters.filter((f) => f.active);
   const relaxed: string[] = [];

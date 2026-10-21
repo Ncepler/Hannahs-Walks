@@ -55,5 +55,5 @@ export interface RouteStats {
   repeatShare: number;                     // share of length on edges walked 3+ times
 }
 
-export type WalkKind = 'loop' | 'out-and-back' | 'lollipop' | 'custom';
+export type WalkKind = 'loop' | 'out-and-back' | 'lollipop' | 'one-way' | 'custom';
 export type Pace = 'easy' | 'steady' | 'brisk';

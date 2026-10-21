@@ -1,5 +1,5 @@
 import { FT_PER_METER } from './config';
-import { traverse } from './graph';
+import { isOneWay, traverse } from './graph';
 import { apmOf, roundMinutes, type PoolRoute } from './score';
 import type { Mood, NodeId } from './types';
 
@@ -83,8 +83,13 @@ export function whyThisOne(route: PoolRoute, mood: Mood): string {
         ? 'barely any climbing'
         : 'gentle grades';
 
+  const end = route.path[route.path.length - 1];
   const place = s.pois.find((id) => PLACE[id]);
-  const pause = place ? `${PLACE[place].noun} as your pause point` : null;
+  const pause = isOneWay(route.path) && PLACE[end]
+    ? `${PLACE[end].noun} as your finish`
+    : place
+      ? `${PLACE[place].noun} as your pause point`
+      : null;
 
   const order =
     mood === 'workout' ? [hills, traffic, pause] : mood === 'ponder' ? [pause, traffic, hills] : [traffic, hills, pause];

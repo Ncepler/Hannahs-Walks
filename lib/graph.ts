@@ -74,14 +74,17 @@ export interface Validation {
   errors: string[];
 }
 
-/** §5 validation rules 1 - 4. Rule 5 (reversal) is `reversalHolds`. */
-export function validatePath(path: readonly NodeId[]): Validation {
+/** A walk that does not finish at Home. */
+export const isOneWay = (path: readonly NodeId[]) => path[path.length - 1] !== HOME_ID;
+
+/** §5 validation rules 1 - 4. Rule 5 (reversal) is `reversalHolds`. A one-way walk may finish elsewhere. */
+export function validatePath(path: readonly NodeId[], opts: { oneWay?: boolean } = {}): Validation {
   const errors: string[] = [];
   if (!Array.isArray(path) || path.length < 2) return { ok: false, errors: ['Walk is too short'] };
   const unknown = path.filter((id) => typeof id !== 'string' || !(id in nodes));
   if (unknown.length) errors.push(`Unknown node ${String(unknown[0])}`);
   if (path[0] !== HOME_ID) errors.push('Walk must start at HOME');
-  if (path[path.length - 1] !== HOME_ID) errors.push('Walk must end at HOME');
+  if (!opts.oneWay && path[path.length - 1] !== HOME_ID) errors.push('Walk must end at HOME');
   if (!unknown.length) {
     for (let i = 0; i < path.length - 1; i++) {
       if (segmentsBetween(path[i], path[i + 1]).length !== 1) {

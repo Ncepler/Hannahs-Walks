@@ -6,9 +6,9 @@ import { CURATED } from '../data/curated';
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
-import { composeAll } from '../lib/compose';
-import { computeStats, milesOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
-import { another, apmOf, defaultAnswers, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
+import { composeAll, composeOneWay } from '../lib/compose';
+import { computeStats, isOneWay, LANDMARKS, milesOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
+import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
 import type { Mood } from '../lib/types';
 
 let failures = 0;
@@ -210,8 +210,50 @@ function phase2() {
   check('A10', 'and never repeat a route name back to back where other routes exist (3 broad sessions)', sameName.length === 0, sameName.join(',') || '300 calls, 0 repeated names');
 }
 
+// "End back at Home" (added after the spec): checked by default, unchecked also offers one-way walks.
+function oneWay() {
+  section('End back at Home');
+  const walks = composeOneWay();
+  const bad = walks.filter((w) => {
+    const p = w.path;
+    const ends = LANDMARKS.includes(p[p.length - 1]);
+    const simple = new Set(p).size === p.length;
+    const mi = milesOf(p);
+    return !validatePath(p, { oneWay: true }).ok || !isOneWay(p) || !ends || !simple || mi < 0.4 || mi > 7.5;
+  }).length;
+  const pool = getPool();
+  check('X1', 'one-way walks: simple paths from HOME ending at a named place, valid, 0.4 - 7.5 mi', walks.length > 0 && bad === 0, `${walks.length} walks, ${bad} bad, ${Math.min(...pool.oneWay.map((r) => r.stats.miles)).toFixed(2)} - ${Math.max(...pool.oneWay.map((r) => r.stats.miles)).toFixed(2)} mi`);
+  check('X1', 'the closed-walk pool contains no one-way walk', pool.routes.every((r) => !isOneWay(r.path)), `${pool.routes.length} closed routes`);
+  check('X1', 'the validator still rejects an open path unless oneWay is set', !validatePath(['HOME', 'BIRCH_ELM'], {}).ok && validatePath(['HOME', 'BIRCH_SYC', 'SYC_FIR', 'FIR_CHEST', 'GREEN_CHEST', 'CHEST_NB', 'NB_MUSEUM', 'NCMA'], { oneWay: true }).ok, 'default rejects an open path; oneWay accepts it');
+
+  // Checked (the default): every result ends at Home, for every mood and for 100 show-another calls each.
+  const open: string[] = [];
+  for (const mood of ['clear', 'workout', 'ponder'] as const) {
+    const answers = defaultAnswers(mood);
+    if (!answers.returnHome) open.push(`${mood}: default is not checked`);
+    open.push(...rank(answers).ranked.filter((s) => isOneWay(s.route.path)).map((s) => `${mood}:${s.route.id}`));
+    const session = plan(answers);
+    if (isOneWay(session.current.path)) open.push(`${mood}: first result`);
+    for (let i = 0; i < 100; i++) if (isOneWay(another(session).path)) open.push(`${mood}: another #${i}`);
+  }
+  check('X2', 'checked by default: every result and 300 show-another calls end back at HOME', open.length === 0, open.slice(0, 4).join('; ') || 'all closed');
+
+  // Unchecked: one-way walks are offered when the time fits.
+  const shown: string[] = [];
+  let missing = 0;
+  for (const mood of ['clear', 'workout', 'ponder'] as const) {
+    const a: Answers = { ...defaultAnswers(mood), pace: 'steady', time: { min: 60 }, returnHome: false };
+    const n = diversePicks(rank(a).ranked).filter((s) => isOneWay(s.route.path)).length;
+    const checked = diversePicks(rank({ ...a, returnHome: true }).ranked).filter((s) => isOneWay(s.route.path)).length;
+    shown.push(`${mood} ${n}/5 (checked: ${checked})`);
+    if (n < 1 || checked !== 0) missing++;
+  }
+  check('X3', 'unchecked, 60 min: each mood gets at least one one-way pick of 5; checked gets none', missing === 0, shown.join(', '));
+}
+
 phase1();
 phase2();
+oneWay();
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

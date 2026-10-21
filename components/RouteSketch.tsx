@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { placeTitle } from "@/lib/describe";
-import { nodes, segments, segmentBetween } from "@/lib/graph";
+import { isOneWay, nodes, segments, segmentBetween } from "@/lib/graph";
 import type { Mood, NodeId } from "@/lib/types";
 
 const W = 320;
@@ -53,6 +53,7 @@ export function RouteSketch({ path, mood }: { path: readonly NodeId[]; mood: Moo
 
     const turnarounds = new Set<NodeId>();
     for (let i = 1; i < path.length - 1; i++) if (path[i - 1] === path[i + 1]) turnarounds.add(path[i]);
+    if (isOneWay(path)) turnarounds.add(path[path.length - 1]);
     const places = [...new Set(path.filter((id) => nodes[id].kind === "poi"))];
     return { at, route: route.join(""), context, turnarounds: [...turnarounds].slice(0, 4), places };
   }, [path]);
@@ -105,7 +106,7 @@ export function RouteSketch({ path, mood }: { path: readonly NodeId[]; mood: Moo
       <p className="legend" aria-hidden="true">
         <span>● Home</span>
         <span>◆ Place</span>
-        <span>○ Turnaround</span>
+        <span>{isOneWay(path) ? "○ Finish" : "○ Turnaround"}</span>
       </p>
     </figure>
   );

@@ -310,7 +310,8 @@ button, a, [role="button"], [role="radio"] {
   .chip:hover:not(:disabled):not([aria-pressed="true"]),
   .mood-card:hover:not([aria-pressed="true"]),
   .btn-secondary:hover:not(:disabled),
-  .switch-row:hover { border-color: var(--ink-2); box-shadow: var(--shadow); }
+  .switch-row:hover,
+  .check-row:hover { border-color: var(--ink-2); box-shadow: var(--shadow); }
   .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--forest) 90%, #000); }
   .btn-text:hover:not(:disabled), .back-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
 }
@@ -398,7 +399,8 @@ button, a, [role="button"], [role="radio"] {
 .mood-label { display: block; font-weight: 600; font-size: 1.0625rem; line-height: 1.25; }
 .mood-sub { display: block; margin-top: 2px; font-size: 0.9375rem; font-weight: 500; color: var(--ink-2); }
 
-.switch-row {
+.switch-row,
+.check-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -436,6 +438,25 @@ button, a, [role="button"], [role="radio"] {
 }
 .switch-row[aria-checked="true"] .switch-track { background: var(--forest); }
 .switch-row[aria-checked="true"] .switch-thumb { transform: translateX(20px); }
+
+.switch-row + .check-row { margin-top: 10px; }
+.check-row { justify-content: flex-start; margin-top: 20px; }
+.check-box {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 2px solid var(--ink-2);
+  color: var(--on-forest);
+  transition: background-color var(--dur-chip) var(--ease-out), border-color var(--dur-chip) var(--ease-out);
+}
+.check-mark { opacity: 0; transition: opacity 120ms var(--ease-out); }
+.check-row[aria-checked="true"] .check-box { background: var(--forest); border-color: var(--forest); }
+.check-row[aria-checked="true"] .check-mark { opacity: 1; }
+.check-label { display: block; }
+.check-sub { display: block; margin-top: 1px; font-size: 0.8125rem; font-weight: 500; color: var(--ink-2); }
 
 /* Pinned action bar: a soft scroll-edge fade instead of a hard divider */
 .bar {
@@ -648,7 +669,7 @@ button, a, [role="button"], [role="radio"] {
 /* ---------- Accessibility variants (§15.4, §15.5) ---------- */
 @media (prefers-contrast: more) {
   .toggle { border: 1px solid var(--ink); }
-  .chip, .btn-secondary, .mood-card, .switch-row, .tag, .textarea { border-color: var(--ink); }
+  .chip, .btn-secondary, .mood-card, .switch-row, .check-row, .tag, .textarea { border-color: var(--ink); }
   .btn-primary, .chip[aria-pressed="true"] { border-color: var(--ink); }
 }
 

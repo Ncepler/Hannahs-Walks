@@ -28,10 +28,12 @@ export interface Form {
   hills: Hills | null;
   stops: Stop[];
   avoidBusy: boolean | null;
+  /** "End back at Home". `null` means untouched, which is checked. */
+  returnHome: boolean | null;
   pace: Pace | null;
 }
 
-export const emptyForm: Form = { mood: null, time: null, distance: null, hills: null, stops: [], avoidBusy: null, pace: null };
+export const emptyForm: Form = { mood: null, time: null, distance: null, hills: null, stops: [], avoidBusy: null, returnHome: null, pace: null };
 
 const TIME_CHOICE: Record<TimeKey, TimeChoice | null> = {
   "15": { min: 15 },
@@ -53,6 +55,7 @@ export function toAnswers(f: Form, mood: Mood): Answers {
     hills: f.hills ?? "any",
     stops: new Set(f.stops),
     avoidBusy: f.avoidBusy ?? d.avoidBusy,
+    returnHome: f.returnHome ?? d.returnHome,
     pace: f.pace ?? d.pace,
   };
 }
@@ -131,6 +134,7 @@ export function summaryRows(f: Form): { label: string; value: string }[] {
     rows.push({ label: "Pace", value: labelOf(PACE_OPTS, pace)!.label });
     const busy = f.avoidBusy ?? f.mood === "clear";
     if (busy) rows.push({ label: "Roads", value: "Keeping off busy roads" });
+    rows.push({ label: "Finish", value: (f.returnHome ?? true) ? "Back at Home" : "Anywhere, one-way walks included" });
   }
   return rows;
 }
@@ -216,6 +220,7 @@ export function Wizard({ step, form, onForm, onStep, onPlan, onSurprise }: Props
   const mood = form.mood;
   const pace = form.pace ?? (mood ? defaultAnswers(mood).pace : null);
   const avoidBusy = form.avoidBusy ?? mood === "clear";
+  const returnHome = form.returnHome ?? true;
   const last = step === STEP_COUNT - 1;
 
   return (
@@ -306,6 +311,23 @@ export function Wizard({ step, form, onForm, onStep, onPlan, onSurprise }: Props
               <span className="switch-label">Keep me off busy roads</span>
               <span className="switch-track" aria-hidden="true">
                 <span className="switch-thumb" />
+              </span>
+            </button>
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={returnHome}
+              className="check-row pressable"
+              onClick={() => onForm({ returnHome: !returnHome })}
+            >
+              <span className="check-box" aria-hidden="true">
+                <svg className="check-mark" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m2.5 7.5 3 3 6-7" />
+                </svg>
+              </span>
+              <span>
+                <span className="check-label">End back at Home</span>
+                <span className="check-sub">Uncheck it if you don&rsquo;t need to walk home.</span>
               </span>
             </button>
           </>
