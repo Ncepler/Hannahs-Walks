@@ -5,17 +5,32 @@ import { Calculating } from "@/components/Calculating";
 import { Directions } from "@/components/Directions";
 import { BrandMark, Contours } from "@/components/icons";
 import { ModeToggle, type Mode } from "@/components/ModeToggle";
+import { PasscodeSheet } from "@/components/PasscodeSheet";
 import { PremiumBox } from "@/components/PremiumBox";
 import { Sheet } from "@/components/Sheet";
 import { RouteCard } from "@/components/RouteCard";
 import { emptyForm, STEP_COUNT, Summary, toAnswers, Wizard, type Form } from "@/components/Wizard";
 import { APP_NAME, COPY, relaxedLine } from "@/lib/config";
 import { joinList } from "@/lib/describe";
+import { isOneWay, validatePath } from "@/lib/graph";
 import { selectWaypoints } from "@/lib/maps";
-import { another, plan, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
+import { another, plan, routeFromPath, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
 import type { Mood, Pace } from "@/lib/types";
 
 type Phase = "asking" | "calculating" | "result";
+type AiPhase = Phase | "error";
+type AiError = "rate" | "network" | "server";
+interface AiResult {
+  route: PoolRoute;
+  mood: Mood;
+  why: string;
+  caveat?: string;
+}
+const AI_MESSAGE: Record<AiError, string> = {
+  rate: "That's enough planning for today. Try again tomorrow, or switch to regular.",
+  network: "Couldn't reach the planner. Check your connection.",
+  server: "The planner had a hiccup. Regular mode still works.",
+};
 const MOODS: Mood[] = ["clear", "workout", "ponder"];
 const MODE_KEY = "sw_mode";
 
@@ -28,9 +43,19 @@ export default function Page() {
   const [route, setRoute] = useState<PoolRoute | null>(null);
   const [planned, setPlanned] = useState<{ mood: Mood; pace: Pace }>({ mood: "clear", pace: "steady" });
 
+  const [aiText, setAiText] = useState("");
+  const [aiReturnHome, setAiReturnHome] = useState(true);
+  const [aiPhase, setAiPhase] = useState<AiPhase>("asking");
+  const [ai, setAi] = useState<AiResult | null>(null);
+  const [aiError, setAiError] = useState<AiError>("server");
+  const aiAbort = useRef<AbortController | null>(null);
+  const [premiumOK, setPremiumOK] = useState(false);
+  const [lockOpen, setLockOpen] = useState(false);
+
   const [dirOpen, setDirOpen] = useState(false);
   const [startFromHome, setStartFromHome] = useState(false);
-  const plan4 = useMemo(() => (route ? selectWaypoints(route.path) : null), [route]);
+  const dirRoute = mode === "regular" ? route : (ai?.route ?? null);
+  const plan4 = useMemo(() => (dirRoute ? selectWaypoints(dirRoute.path) : null), [dirRoute]);
 
   const formRef = useRef(form);
   const phaseRef = useRef<Phase>("asking");
@@ -48,8 +73,18 @@ export default function Page() {
   // Remember the last mode. Storage can be blocked, so both directions are guarded.
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(MODE_KEY);
-      if (saved === "premium") setMode("premium");
+      if (localStorage.getItem(MODE_KEY) === "premium") {
+        // Come back to Premium only if it is open to this browser.
+        fetch("/api/unlock?scope=premium", { cache: "no-store" })
+          .then((r) => r.json())
+          .then((j) => {
+            if (!j.required || j.unlocked) {
+              setPremiumOK(true);
+              setMode("premium");
+            }
+          })
+          .catch(() => {});
+      }
     } catch {
       /* storage can be blocked */
     }
@@ -64,6 +99,20 @@ export default function Page() {
       localStorage.setItem(MODE_KEY, m);
     } catch {
       /* storage can be blocked */
+    }
+  };
+
+  /** Premium may ask for a passcode first; the switch waits for it. */
+  const requestMode = async (m: Mode) => {
+    if (m === "regular" || premiumOK) return changeMode(m);
+    try {
+      const j = await (await fetch("/api/unlock?scope=premium", { cache: "no-store" })).json();
+      if (!j.required || j.unlocked) {
+        setPremiumOK(true);
+        changeMode(m);
+      } else setLockOpen(true);
+    } catch {
+      changeMode(m); // cannot tell; the planner itself will say if it is locked
     }
   };
 
@@ -109,14 +158,60 @@ export default function Page() {
     setPhaseBoth("asking");
   }, []);
 
+  const cancelAi = useCallback(() => {
+    aiAbort.current?.abort();
+    aiAbort.current = null;
+    setAiPhase("asking");
+  }, []);
+
+  /** Sends the note to /api/plan. The answer is re-validated here; server numbers are never trusted. */
+  const planAi = async () => {
+    const prompt = aiText.trim();
+    if (!prompt || aiPhase === "calculating") return;
+    const ac = new AbortController();
+    aiAbort.current = ac;
+    setAiPhase("calculating");
+    const fail = (e: AiError) => {
+      setAiError(e);
+      setAiPhase("error");
+    };
+    try {
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt, returnHome: aiReturnHome }),
+        signal: ac.signal,
+      });
+      if (res.status === 401) {
+        setPremiumOK(false);
+        setAiPhase("asking");
+        return setLockOpen(true);
+      }
+      if (res.status === 429) return fail("rate");
+      if (!res.ok) return fail("server");
+      const data = await res.json();
+      const path: string[] = Array.isArray(data.path) ? data.path : [];
+      if (!validatePath(path, { oneWay: isOneWay(path) }).ok) return fail("server");
+      const moods: Mood[] = data.mood === "clear" || data.mood === "workout" || data.mood === "ponder" ? [data.mood] : [];
+      const found = routeFromPath("AI", String(data.title ?? "Your walk"), "ai", path, moods);
+      setAi({ route: found, mood: moods[0] ?? found.moods[0], why: String(data.why ?? ""), caveat: data.caveat ? String(data.caveat) : undefined });
+      setAiPhase("result");
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") return;
+      fail("network");
+    }
+  };
+
   useEffect(() => {
-    if (phase !== "calculating") return;
+    if (phase !== "calculating" && aiPhase !== "calculating") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") cancel();
+      if (e.key !== "Escape") return;
+      if (phase === "calculating") cancel();
+      if (aiPhase === "calculating") cancelAi();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, cancel]);
+  }, [phase, aiPhase, cancel, cancelAi]);
 
   useEffect(() => () => clearTimers(), []);
 
@@ -154,6 +249,8 @@ export default function Page() {
 
   const regular = mode === "regular";
   const startOfFlow = step === 0 && phase === "asking";
+  const showing = regular ? phase : aiPhase;
+  const resultShown = showing === "result";
 
   return (
     <div className="shell">
@@ -163,12 +260,12 @@ export default function Page() {
             <BrandMark />
             <span className="brand-name">{APP_NAME}</span>
           </div>
-          <ModeToggle mode={mode} onChange={changeMode} />
+          <ModeToggle mode={mode} onChange={requestMode} />
         </div>
       </header>
 
-      <main className="wrap layout" data-phase={regular ? phase : "asking"}>
-        <div className="pane-left" inert={phase === "calculating"}>
+      <main className="wrap layout" data-phase={showing}>
+        <div className="pane-left" inert={showing === "calculating"}>
           <Contours />
           <h1 className="hero" data-compact={regular && !startOfFlow}>
             {COPY.hero}
@@ -184,38 +281,101 @@ export default function Page() {
             />
           </div>
           <div hidden={regular}>
-            <PremiumBox />
+            <PremiumBox
+              text={aiText}
+              onText={setAiText}
+              returnHome={aiReturnHome}
+              onReturnHome={setAiReturnHome}
+              onSubmit={planAi}
+              busy={aiPhase === "calculating"}
+            />
           </div>
         </div>
 
-        {regular && (
-          <div className="pane-right">
-            {phase === "asking" && <Summary form={form} />}
-            {phase === "calculating" && <Calculating lines={COPY.spinnerRegular} stepMs={330} onCancel={cancel} />}
-            {phase === "result" && route && (
-              <RouteCard
-                route={route}
-                mood={planned.mood}
-                pace={planned.pace}
-                note={note}
-                onAnother={showAnother}
-                onChange={changeAnswers}
-                onDirections={() => setDirOpen(true)}
-                startFromHome={startFromHome}
-                onStartFromHome={setStartFromHome}
-              />
-            )}
-          </div>
-        )}
+        <div className="pane-right">
+          {regular ? (
+            <>
+              {phase === "asking" && <Summary form={form} />}
+              {phase === "calculating" && <Calculating lines={COPY.spinnerRegular} stepMs={330} onCancel={cancel} />}
+              {phase === "result" && route && (
+                <RouteCard
+                  route={route}
+                  mood={planned.mood}
+                  pace={planned.pace}
+                  note={note}
+                  onAnother={showAnother}
+                  onChange={changeAnswers}
+                  onDirections={() => setDirOpen(true)}
+                  startFromHome={startFromHome}
+                  onStartFromHome={setStartFromHome}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              {aiPhase === "calculating" && <Calculating lines={COPY.spinnerPremium} stepMs={1400} onCancel={cancelAi} />}
+              {aiPhase === "error" && (
+                <section className="card error" role="alert">
+                  <p className="error-text">{AI_MESSAGE[aiError]}</p>
+                  <div className="error-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary pressable"
+                      onClick={() => {
+                        setAiPhase("asking"); // the error is done with; Premium reopens on the note
+                        changeMode("regular");
+                      }}
+                    >
+                      Use regular mode
+                    </button>
+                    {aiError !== "rate" && (
+                      <button type="button" className="btn btn-secondary pressable" onClick={planAi}>
+                        Try again
+                      </button>
+                    )}
+                    {aiError !== "rate" && (
+                      <button type="button" className="btn btn-text pressable" onClick={() => setAiPhase("asking")}>
+                        Edit my note
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
+              {aiPhase === "result" && ai && (
+                <RouteCard
+                  route={ai.route}
+                  mood={ai.mood}
+                  pace="steady"
+                  premium={{ why: ai.why, caveat: ai.caveat }}
+                  onAnother={planAi}
+                  onChange={() => setAiPhase("asking")}
+                  onDirections={() => setDirOpen(true)}
+                  startFromHome={startFromHome}
+                  onStartFromHome={setStartFromHome}
+                />
+              )}
+            </>
+          )}
+        </div>
       </main>
 
-      {dirOpen && route && plan4 && (
+      {dirOpen && dirRoute && plan4 && (
         <Sheet labelledBy="dir-title" onClose={() => setDirOpen(false)}>
-          {(api) => <Directions route={route} pace={planned.pace} plan={plan4} startFromHome={startFromHome} api={api} />}
+          {(api) => <Directions route={dirRoute} pace={regular ? planned.pace : "steady"} plan={plan4} startFromHome={startFromHome} api={api} />}
         </Sheet>
       )}
 
-      {phase !== "result" && (
+      {lockOpen && (
+        <PasscodeSheet
+          onUnlocked={() => {
+            setPremiumOK(true);
+            changeMode("premium");
+          }}
+          onClose={() => setLockOpen(false)}
+        />
+      )}
+
+      {!resultShown && (
         <footer className="wrap page-foot">
           <p className="fineprint">{COPY.footer}</p>
         </footer>

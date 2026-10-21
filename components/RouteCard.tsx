@@ -26,10 +26,12 @@ interface Props {
   /** "Start from Home" adds an origin to the Maps link; otherwise Google starts where she stands. */
   startFromHome: boolean;
   onStartFromHome: (v: boolean) => void;
+  /** Premium: the planner's own words replace the generated "why", and the buttons change. */
+  premium?: { why: string; caveat?: string | null };
 }
 
 /** The result: route card and sketch. Reveals with a stagger; swaps with a quick fade. */
-export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChange, onDirections, startFromHome, onStartFromHome }: Props) {
+export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChange, onDirections, startFromHome, onStartFromHome, premium }: Props) {
   const { shown: route, phase } = useStaged(incoming, 140, true);
   const title = useRef<HTMLHeadingElement>(null);
 
@@ -61,6 +63,8 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
 
         <div className="rc" style={stagger(2)}>
           {route.blurb && <p className="blurb">{route.blurb}</p>}
+          {premium && <blockquote className="quote">{premium.why}</blockquote>}
+          {premium?.caveat && <p className="relaxed">{premium.caveat}</p>}
           {note && <p className="relaxed">{note}</p>}
         </div>
 
@@ -84,10 +88,12 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
         </div>
 
         <div className="rc details" style={stagger(5)}>
-          <p className="why">
-            <span className="eyebrow">Why this one</span>
-            {whyThisOne(route, mood)}
-          </p>
+          {!premium && (
+            <p className="why">
+              <span className="eyebrow">Why this one</span>
+              {whyThisOne(route, mood)}
+            </p>
+          )}
           {pauses.length > 0 && (
             <ul className="pauses">
               {pauses.map((p) => (
@@ -121,10 +127,10 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
             {!plan.exact && <p className="relaxed">{COPY.mapsMismatch}</p>}
           </div>
           <button type="button" className="btn btn-secondary pressable" onClick={onAnother}>
-            {COPY.actions.another}
+            {premium ? "Try again" : COPY.actions.another}
           </button>
           <button type="button" className="btn btn-text pressable" onClick={onChange}>
-            {COPY.actions.change}
+            {premium ? "Edit my note" : COPY.actions.change}
           </button>
         </div>
 

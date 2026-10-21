@@ -7,6 +7,9 @@ import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
 import { composeAll, composeOneWay } from '../lib/compose';
+import type Anthropic from '@anthropic-ai/sdk';
+import { buildSystemPrompt, checkPlan, FALLBACK_CAVEAT, inferMood, parseTargets, planWalk, type Ask, type PlannerClient } from '../lib/ai';
+import { codeOk, COOKIE, hasAccess, token } from '../lib/session';
 import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
 import { embedUrl, mapsLink, selectWaypoints, simulate } from '../lib/maps';
 import { MAPS_MAX_WAYPOINTS } from '../lib/config';
@@ -318,10 +321,119 @@ function phase4() {
   check('X4', 'hill cues: steep stretches on the Ash Drive route are called out', steep.length > 0 && steep.every((s) => /climbs|drops|steep/.test(s.cue!)), steep.map((s) => s.cue).join(' / '));
 }
 
+async function phase5() {
+  section('Premium planner (Phase 5): validators and pipeline on fixtures; the live model call is not exercised');
+  const R = (id: string) => [...CURATED.find((c) => c.id === id)!.path];
+  const ask = (prompt: string, over: Partial<Ask> = {}): Ask => ({ prompt, pace: 'steady', returnHome: true, ...over });
+  const body = { title: 'Test walk', mood: 'clear', why: 'You get quiet streets.' };
+  const reject = (path: unknown, a: Ask) => {
+    const c = checkPlan({ ...body, path }, a);
+    return c.ok ? 'ACCEPTED' : c.error;
+  };
+
+  // A12
+  const notHome = reject(['BIRCH_ELM', 'HOME', 'BIRCH_SYC', 'HOME'], ask('a walk'));
+  const jump = reject(['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'], ask('a walk'));
+  const ghost = reject(['HOME', 'BIRCH_ELM', 'ATLANTIS', 'BIRCH_ELM', 'HOME'], ask('a walk'));
+  const ten = [...R('R17'), ...R('R14').slice(1)];
+  const tenMi = milesOf(ten);
+  const tooLong = reject(ten, ask('about 2 miles'));
+  const sixVsTwo = reject(R('R17'), ask('about 2 miles'));
+  check('A12', 'rejects a path that does not start at HOME', /start at HOME/.test(notHome), notHome);
+  check('A12', 'rejects a non-adjacent pair', /does not exist/.test(jump), jump);
+  check('A12', 'rejects an unknown node', /Unknown node ATLANTIS/.test(ghost), ghost);
+  check('A12', `rejects a ${tenMi.toFixed(1)} mi walk when the request says "about 2 miles" (and a 6 mi one by the 30% rule)`, tooLong !== 'ACCEPTED' && /requested about 2/.test(sixVsTwo), `${tooLong}; ${sixVsTwo}`);
+  const okPlain = checkPlan({ ...body, path: R('R04') }, ask('a gentle loop'));
+  const okNumber = checkPlan({ ...body, path: R('R04') }, ask('about 1 mile'));
+  check('A12', "accepts R04's path, with and without a number in the note", okPlain.ok && okNumber.ok, `R04 = ${milesOf(R('R04')).toFixed(2)} mi`);
+
+  // The rest of §13.5 and the parsing helper
+  const pp = checkPlan({ ...body, path: R('R04'), pause_points: ['LIBRARY', 'CYP_ELM', 'BIRCH_SYC', 'ELM_W'] }, ask('x'));
+  check('X5', 'pause points not on the path are dropped, at most two kept', pp.ok && pp.plan.pausePoints.join() === 'CYP_ELM,BIRCH_SYC', pp.ok ? pp.plan.pausePoints.join() : 'rejected');
+  check('X5', 'a time in the note is held to ±30%', checkPlan({ ...body, path: R('R04') }, ask('about 30 minutes')).ok && !checkPlan({ ...body, path: R('R04') }, ask('about 90 minutes')).ok, 'R04 is ~25 min');
+  const t = (s: string) => parseTargets(s);
+  const near2 = (a: number | undefined, b: number) => a !== undefined && Math.abs(a - b) < 0.05;
+  check('X5', 'distance and time parsing: 3 miles, 5k, 45 minutes, an hour, an hour and a half, ranges skipped', near2(t('3 miles').miles, 3) && near2(t('5k').miles, 3.11) && near2(t('about 45 minutes').minutes, 45) && near2(t('an hour or so').minutes, 60) && near2(t('an hour and a half').minutes, 90) && near2(t('1.5 hours').minutes, 90) && near2(t('half an hour').minutes, 30) && t('30 to 45 minutes').minutes === undefined && t('I need to stop thinking').minutes === undefined, JSON.stringify([t('5k'), t('an hour and a half')]));
+  const lib = ['HOME', 'BIRCH_SYC', 'SYC_FIR', 'FIR_CHEST', 'GREEN_CHEST', 'CHEST_NB', 'NB_MUSEUM', 'NB_BEECH', 'NB_WITTES', 'WITTES_BRYANT', 'BRYANT_ON', 'ON_EBWAY', 'LIBRARY'];
+  check('X5', 'one-way: a walk finishing at the library passes only when the box is unchecked; a junction finish never does', checkPlan({ ...body, path: lib }, ask('x', { returnHome: false })).ok && !checkPlan({ ...body, path: lib }, ask('x', { returnHome: true })).ok && !checkPlan({ ...body, path: lib.slice(0, 6) }, ask('x', { returnHome: false })).ok, 'ok');
+
+  // Pipeline with a fake client (no key, no network)
+  const message = (content: unknown[]) => ({ id: 'm', type: 'message', role: 'assistant', model: 'fake', content, stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } }) as unknown as Anthropic.Message;
+  const use = (input: object) => message([{ type: 'tool_use', id: 'tu_1', name: 'plan_walk', input }]);
+  const fake = (replies: Anthropic.Message[]) => {
+    const calls: Anthropic.MessageCreateParamsNonStreaming[] = [];
+    const client: PlannerClient = {
+      messages: {
+        create: async (params) => {
+          calls.push(JSON.parse(JSON.stringify(params)));
+          return replies[Math.min(calls.length - 1, replies.length - 1)];
+        },
+      },
+    };
+    return { client, calls };
+  };
+  const good = use({ ...body, path: R('R04') });
+  // 'mixed' says nothing useful, so the fallback reads the note's keywords (§13.5.6).
+  const bad = use({ ...body, mood: 'mixed', path: ['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'] });
+
+  const a = fake([good]);
+  const ra = await planWalk(a.client, ask('a gentle loop'));
+  const p0 = a.calls[0];
+  check('X5', 'a good answer: source "ai", one call, forced plan_walk tool, cached system block, default model', ra.source === 'ai' && a.calls.length === 1 && (p0.tool_choice as { name?: string } | undefined)?.name === 'plan_walk' && p0.model === 'claude-sonnet-5-5' && p0.max_tokens === 1200 && Array.isArray(p0.system) && (p0.system[0] as { cache_control?: { type: string } }).cache_control?.type === 'ephemeral', `${ra.source}, ${a.calls.length} call`);
+
+  const b = fake([bad, good]);
+  const rb = await planWalk(b.client, ask('a gentle loop'));
+  const retry = b.calls[1]?.messages ?? [];
+  const lastMsg = retry[retry.length - 1];
+  const toolResult = Array.isArray(lastMsg?.content) ? (lastMsg.content[0] as { type?: string; is_error?: boolean; content?: string }) : undefined;
+  check('X5', 'a bad answer is retried once with the specific error as an is_error tool_result', rb.source === 'ai' && b.calls.length === 2 && toolResult?.type === 'tool_result' && toolResult.is_error === true && /does not exist/.test(String(toolResult.content)) && retry[retry.length - 2]?.role === 'assistant', `${b.calls.length} calls; "${toolResult?.content}"`);
+
+  const c = fake([bad]);
+  const rc = await planWalk(c.client, ask('Hilly. I want to sweat, an hour or so.'));
+  const rcStats = computeStats(rc.path);
+  check('X5', 'two bad answers fall back to the regular engine with the exact caveat; the walk is valid and fits the note', rc.source === 'fallback' && c.calls.length === 2 && rc.caveat === FALLBACK_CAVEAT && validatePath(rc.path).ok && rc.mood === 'workout' && apmOf(rcStats) > 100 && minutesFor(rcStats, 'steady') >= 48 && minutesFor(rcStats, 'steady') <= 72, `${rc.title}: ${rcStats.miles.toFixed(1)} mi, ${Math.round(minutesFor(rcStats, 'steady'))} min`);
+
+  const d = fake([message([{ type: 'text', text: 'no tool' }])]);
+  const rd = await planWalk(d.client, ask('Flat and quiet, about 30 minutes, I need to stop thinking.'));
+  const rdStats = computeStats(rd.path);
+  check('X5', 'no tool call twice: falls back; "flat and quiet, about 30 minutes" gives a flat quiet walk of 24 - 36 min', rd.source === 'fallback' && d.calls.length === 2 && rd.mood === 'clear' && apmOf(rdStats) <= 70 && minutesFor(rdStats, 'steady') >= 24 && minutesFor(rdStats, 'steady') <= 36 && rdStats.busyShare <= 0.1, `${rd.title}: ${Math.round(minutesFor(rdStats, 'steady'))} min`);
+
+  const e = await planWalk(fake([bad]).client, ask('Somewhere pretty. End at the pond if you can.'));
+  check('X5', 'fallback for "somewhere pretty, end at the pond": ponder mood, passes the pond', e.mood === 'ponder' && (e.path.includes('VILLAGE') || e.path.includes('VIADUCT')), `${e.title}`);
+  const f = await planWalk(fake([bad]).client, ask('x', { returnHome: false, prompt: 'a short walk to the library' }));
+  check('X5', 'fallback honours "no need to return": library stop, and the result may be one-way', f.path.includes('LIBRARY'), `${f.title}${isOneWay(f.path) ? ' (one-way)' : ''}`);
+  const g = await planWalk(fake([use({ ...body, mood: 'ponder', path: ['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'] })]).client, ask('go for a walk'));
+  check('X5', "fallback takes the model's own mood when it gave one", g.source === 'fallback' && g.mood === 'ponder', g.mood);
+  check('X5', 'mood keywords: sweat, quiet, pretty', inferMood('I want to sweat') === 'workout' && inferMood('something calm') === 'clear' && inferMood('trees please') === 'ponder' && inferMood('x', 'ponder') === 'ponder', 'ok');
+
+  // The prompt is generated from the data and carries no address
+  const sys = buildSystemPrompt();
+  const allIds = Object.keys(NODES).every((id) => sys.includes(`${id} |`)) && SEGMENTS.every((s) => sys.includes(`${s.id} |`));
+  const examples = CURATED.every((c) => sys.includes(`${c.id} | ${c.name} |`));
+  const user = JSON.stringify(a.calls[0].messages);
+  check('X5', 'system prompt lists all 39 nodes, 48 segments and 22 examples (no example paths), no ZIP, no Walnut', allIds && examples && !/11576|Walnut/i.test(sys) && !/HOME, BIRCH/.test(sys) && /must finish back at HOME/.test(user), `${sys.length} chars, about ${Math.round(sys.length / 4)} tokens`);
+
+  // Passcode cookies
+  const saved = { p: process.env.PREMIUM_PASSCODE, s: process.env.SESSION_SECRET };
+  process.env.PREMIUM_PASSCODE = 'kugel';
+  process.env.SESSION_SECRET = 'a-long-random-string-for-the-test';
+  const good2 = token('premium');
+  const open = hasAccess('premium', good2) && !hasAccess('premium', undefined) && !hasAccess('premium', 'deadbeef') && !hasAccess('premium', good2 + '0') && codeOk('premium', 'kugel') && !codeOk('premium', 'kugel ') && !codeOk('premium', '') && good2 !== token('site') && /^[0-9a-f]{64}$/.test(good2);
+  delete process.env.SESSION_SECRET;
+  const failsClosed = !hasAccess('premium', good2);
+  delete process.env.PREMIUM_PASSCODE;
+  const noCode = hasAccess('premium', undefined);
+  if (saved.p !== undefined) process.env.PREMIUM_PASSCODE = saved.p;
+  if (saved.s !== undefined) process.env.SESSION_SECRET = saved.s;
+  check('X5', 'passcode cookie: HMAC, constant-time compare, wrong/missing cookie refused, fails closed without a secret, open when no code is set', open && failsClosed && noCode && COOKIE.premium === 'sw_premium' && COOKIE.site === 'sw_site', 'sw_premium / sw_site');
+}
+
 phase1();
 phase2();
 oneWay();
 phase4();
 
-console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
-process.exit(failures ? 1 : 0);
+phase5().then(() => {
+  console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
+  process.exit(failures ? 1 : 0);
+});

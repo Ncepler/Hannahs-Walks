@@ -15,6 +15,8 @@ export interface SheetApi {
    * leave with the sheet when it is dismissed. Null on a desktop panel.
    */
   lift: MotionValue<string> | null;
+  /** Rise to the top stop, e.g. when a text field is focused and the keyboard is about to appear. */
+  expand: () => void;
 }
 
 const SNAP_OPEN = 0.6; // fraction of the viewport the sheet covers at its first stop
@@ -222,7 +224,13 @@ export function Sheet({
     }
   };
 
-  const api: SheetApi = { close, atTop, desktop, lift: desktop ? null : lift };
+  const expand = useCallback(() => {
+    if (desktop || closing.current) return;
+    controls.current?.stop();
+    controls.current = animate(y, 0, reduced ? { duration: 0 } : SPRING);
+  }, [desktop, reduced, y]);
+
+  const api: SheetApi = { close, atTop, desktop, lift: desktop ? null : lift, expand };
 
   if (typeof document === "undefined") return null;
 
