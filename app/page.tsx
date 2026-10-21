@@ -15,8 +15,9 @@ import { APP_NAME, COPY, relaxedLine } from "@/lib/config";
 import { joinList } from "@/lib/describe";
 import { isOneWay, validatePath } from "@/lib/graph";
 import { selectWaypoints } from "@/lib/maps";
+import { apiFetch } from "@/lib/api";
 import { another, plan, routeFromPath, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
-import { STATIC_SITE } from "@/lib/site";
+import { PREMIUM_AVAILABLE } from "@/lib/site";
 import type { Mood, Pace } from "@/lib/types";
 
 type Phase = "asking" | "calculating" | "result";
@@ -75,9 +76,9 @@ export default function Page() {
   // Remember the last mode. Storage can be blocked, so both directions are guarded.
   useEffect(() => {
     try {
-      if (!STATIC_SITE && localStorage.getItem(MODE_KEY) === "premium") {
+      if (PREMIUM_AVAILABLE && localStorage.getItem(MODE_KEY) === "premium") {
         // Come back to Premium only if it is open to this browser.
-        fetch("/api/unlock?scope=premium", { cache: "no-store" })
+        apiFetch("/api/unlock?scope=premium")
           .then((r) => r.json())
           .then((j) => {
             if (!j.required || j.unlocked) {
@@ -106,9 +107,9 @@ export default function Page() {
 
   /** Premium may ask for a passcode first; the switch waits for it. */
   const requestMode = async (m: Mode) => {
-    if (m === "regular" || premiumOK || STATIC_SITE) return changeMode(m); // no server to ask on the static site
+    if (m === "regular" || premiumOK || !PREMIUM_AVAILABLE) return changeMode(m); // no server to ask
     try {
-      const j = await (await fetch("/api/unlock?scope=premium", { cache: "no-store" })).json();
+      const j = await (await apiFetch("/api/unlock?scope=premium")).json();
       if (!j.required || j.unlocked) {
         setPremiumOK(true);
         changeMode(m);
@@ -178,7 +179,7 @@ export default function Page() {
       setAiPhase("error");
     };
     try {
-      const res = await fetch("/api/plan", {
+      const res = await apiFetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt, returnHome: aiReturnHome }),
@@ -283,9 +284,7 @@ export default function Page() {
             />
           </div>
           <div hidden={regular}>
-            {STATIC_SITE ? (
-              <PremiumOff onRegular={() => changeMode("regular")} />
-            ) : (
+            {PREMIUM_AVAILABLE ? (
               <PremiumBox
                 text={aiText}
                 onText={setAiText}
@@ -294,6 +293,8 @@ export default function Page() {
                 onSubmit={planAi}
                 busy={aiPhase === "calculating"}
               />
+            ) : (
+              <PremiumOff onRegular={() => changeMode("regular")} />
             )}
           </div>
         </div>

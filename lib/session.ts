@@ -18,5 +18,12 @@ export const token = (s: Scope) => mac(process.env.SESSION_SECRET ?? '', `sw:${s
 export const hasAccess = (s: Scope, cookie?: string) =>
   !needsCode(s) || (configured() && !!cookie && same(Buffer.from(cookie), Buffer.from(token(s))));
 
+/**
+ * What the browser sent as proof: the cookie on the same host, or `Authorization: Bearer <token>` from a page
+ * on another host. The token is the cookie's value, so one check covers both.
+ */
+export const proof = (cookie: string | undefined, authorization: string | null) =>
+  /^Bearer (\S+)$/.exec(authorization ?? '')?.[1] ?? cookie;
+
 /** Constant-time check of the code itself. */
 export const codeOk = (s: Scope, code: string) => needsCode(s) && same(mac('code', code), mac('code', passcode(s)));

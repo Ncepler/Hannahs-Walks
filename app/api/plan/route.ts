@@ -2,11 +2,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { cleanPrompt, DEFAULT_MODEL, planWalk, type PlannerClient } from "@/lib/ai";
 import { PREMIUM_MAX_CHARS } from "@/lib/config";
-import { COOKIE, hasAccess } from "@/lib/session";
+import { corsHeaders, preflight } from "@/lib/cors";
+import { COOKIE, hasAccess, proof } from "@/lib/session";
 import type { Pace } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
+export const OPTIONS = preflight;
 
 // In-memory counters: a speed bump on a serverless host, not a guarantee. Set a spend limit in the
 // Anthropic console as the real backstop.
@@ -32,7 +34,7 @@ export async function POST(req: NextRequest) {
   // Only the status and the time taken are ever logged. Never the note, never the answer.
   const reply = (status: number, body: unknown) => {
     console.info(`plan ${status} ${Date.now() - t0}ms`);
-    return NextResponse.json(body, { status });
+    return NextResponse.json(body, { status, headers: corsHeaders(req) });
   };
 
   const body = await req.json().catch(() => null);
@@ -41,7 +43,7 @@ export async function POST(req: NextRequest) {
   const pace: Pace = PACES.includes(body?.pace) ? body.pace : "steady";
   const returnHome = body?.returnHome !== false;
 
-  if (!hasAccess("premium", req.cookies.get(COOKIE.premium)?.value)) return reply(401, { error: "locked" });
+  if (!hasAccess("premium", proof(req.cookies.get(COOKIE.premium)?.value, req.headers.get("authorization")))) return reply(401, { error: "locked" });
   if (!process.env.ANTHROPIC_API_KEY) return reply(503, { error: "planner_unavailable" });
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
   if (!allowed(ip)) return reply(429, { error: "rate_limited" });

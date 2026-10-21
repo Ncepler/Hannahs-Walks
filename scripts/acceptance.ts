@@ -9,7 +9,8 @@ import { METERS_PER_MILE } from '../lib/config';
 import { composeAll, composeOneWay } from '../lib/compose';
 import type Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt, checkPlan, FALLBACK_CAVEAT, inferMood, parseTargets, planWalk, type Ask, type PlannerClient } from '../lib/ai';
-import { codeOk, COOKIE, hasAccess, token } from '../lib/session';
+import { corsHeaders, preflight } from '../lib/cors';
+import { codeOk, COOKIE, hasAccess, proof, token } from '../lib/session';
 import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
 import { embedUrl, mapsLink, selectWaypoints, simulate } from '../lib/maps';
 import { MAPS_MAX_WAYPOINTS } from '../lib/config';
@@ -428,6 +429,22 @@ async function phase5() {
   if (saved.p !== undefined) process.env.PREMIUM_PASSCODE = saved.p;
   if (saved.s !== undefined) process.env.SESSION_SECRET = saved.s;
   check('X5', 'passcode cookie: HMAC, constant-time compare, wrong/missing cookie refused, fails closed without a secret, open when no code is set', open && failsClosed && noCode && COOKIE.premium === 'sw_premium' && COOKIE.site === 'sw_site', 'sw_premium / sw_site');
+
+  // Another host (the Pages site) sends the same proof as a bearer token, and only listed origins get CORS headers
+  const bearer = proof(undefined, `Bearer ${good2}`) === good2 && proof(good2, null) === good2 && proof(undefined, null) === undefined && proof(undefined, `Bearer ${good2} x`) === undefined && proof('cookie', `Bearer ${good2}`) === good2;
+  const savedOrigin = process.env.ALLOWED_ORIGIN;
+  const call = (origin?: string) => new Request('https://api.test/api/plan', { method: 'OPTIONS', headers: origin ? { origin } : {} });
+  delete process.env.ALLOWED_ORIGIN;
+  const offByDefault = !Object.keys(corsHeaders(call('https://ncepler.github.io'))).length;
+  process.env.ALLOWED_ORIGIN = 'https://ncepler.github.io/, http://localhost:3222';
+  const h = corsHeaders(call('https://ncepler.github.io'));
+  const listedOnly = h['access-control-allow-origin'] === 'https://ncepler.github.io' && /authorization/.test(h['access-control-allow-headers']) && h.vary === 'Origin';
+  const strangers = !Object.keys(corsHeaders(call('https://evil.example'))).length && !Object.keys(corsHeaders(call())).length && !Object.keys(corsHeaders(call('https://ncepler.github.io.evil.example'))).length;
+  const pre = preflight(call('http://localhost:3222'));
+  const answers = pre.status === 204 && pre.headers.get('access-control-allow-origin') === 'http://localhost:3222';
+  if (savedOrigin !== undefined) process.env.ALLOWED_ORIGIN = savedOrigin;
+  else delete process.env.ALLOWED_ORIGIN;
+  check('X5', 'cross-host planner: bearer token reads as the cookie; CORS is off by default and echoes only listed origins', bearer && offByDefault && listedOnly && strangers && answers, `bearer ${bearer}, default off ${offByDefault}, listed ${listedOnly}, strangers refused ${strangers}, preflight ${pre.status}`);
 }
 
 phase1();

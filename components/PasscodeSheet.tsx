@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { apiFetch, keepToken } from "@/lib/api";
 import { Sheet, type SheetApi } from "./Sheet";
 
 function Form({ api, onUnlocked }: { api: SheetApi; onUnlocked: () => void }) {
@@ -14,13 +15,14 @@ function Form({ api, onUnlocked }: { api: SheetApi; onUnlocked: () => void }) {
     e.preventDefault();
     if (!code || busy) return;
     setBusy(true);
-    const res = await fetch("/api/unlock", {
+    const res = await apiFetch("/api/unlock", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code, scope: "premium" }),
     }).catch(() => null);
     setBusy(false);
     if (res?.ok) {
+      keepToken((await res.json().catch(() => null))?.token);
       onUnlocked();
       api.close();
       return;
