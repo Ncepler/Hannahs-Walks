@@ -7,6 +7,7 @@ import { BrandMark, Contours } from "@/components/icons";
 import { ModeToggle, type Mode } from "@/components/ModeToggle";
 import { PasscodeSheet } from "@/components/PasscodeSheet";
 import { PremiumBox } from "@/components/PremiumBox";
+import { PremiumOff } from "@/components/PremiumOff";
 import { Sheet } from "@/components/Sheet";
 import { RouteCard } from "@/components/RouteCard";
 import { emptyForm, STEP_COUNT, Summary, toAnswers, Wizard, type Form } from "@/components/Wizard";
@@ -15,6 +16,7 @@ import { joinList } from "@/lib/describe";
 import { isOneWay, validatePath } from "@/lib/graph";
 import { selectWaypoints } from "@/lib/maps";
 import { another, plan, routeFromPath, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
+import { STATIC_SITE } from "@/lib/site";
 import type { Mood, Pace } from "@/lib/types";
 
 type Phase = "asking" | "calculating" | "result";
@@ -73,7 +75,7 @@ export default function Page() {
   // Remember the last mode. Storage can be blocked, so both directions are guarded.
   useEffect(() => {
     try {
-      if (localStorage.getItem(MODE_KEY) === "premium") {
+      if (!STATIC_SITE && localStorage.getItem(MODE_KEY) === "premium") {
         // Come back to Premium only if it is open to this browser.
         fetch("/api/unlock?scope=premium", { cache: "no-store" })
           .then((r) => r.json())
@@ -104,7 +106,7 @@ export default function Page() {
 
   /** Premium may ask for a passcode first; the switch waits for it. */
   const requestMode = async (m: Mode) => {
-    if (m === "regular" || premiumOK) return changeMode(m);
+    if (m === "regular" || premiumOK || STATIC_SITE) return changeMode(m); // no server to ask on the static site
     try {
       const j = await (await fetch("/api/unlock?scope=premium", { cache: "no-store" })).json();
       if (!j.required || j.unlocked) {
@@ -281,14 +283,18 @@ export default function Page() {
             />
           </div>
           <div hidden={regular}>
-            <PremiumBox
-              text={aiText}
-              onText={setAiText}
-              returnHome={aiReturnHome}
-              onReturnHome={setAiReturnHome}
-              onSubmit={planAi}
-              busy={aiPhase === "calculating"}
-            />
+            {STATIC_SITE ? (
+              <PremiumOff onRegular={() => changeMode("regular")} />
+            ) : (
+              <PremiumBox
+                text={aiText}
+                onText={setAiText}
+                returnHome={aiReturnHome}
+                onReturnHome={setAiReturnHome}
+                onSubmit={planAi}
+                busy={aiPhase === "calculating"}
+              />
+            )}
           </div>
         </div>
 

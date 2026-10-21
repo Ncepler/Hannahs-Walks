@@ -1,0 +1,64 @@
+# Publishes the site to GitHub Pages.
+#
+# One-time setup:
+#   1. Repository Settings > Pages > Build and deployment > Source: "GitHub Actions".
+#   2. Merge this branch into main. The workflow runs on every push to main (or run it by hand from the
+#      Actions tab). The site appears at https://<owner>.github.io/<repo>/
+#   3. Optional: Settings > Secrets and variables > Actions > Variables, add NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
+#      to show the in-page map. Pages sites are public, so limit that key to this site's address in Google Cloud.
+#
+# Pages serves plain files, so the Premium mode, passcodes and the response headers in next.config.ts do not
+# run here. See scripts/build-pages.mjs.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The route checks must still pass before anything is published.
+      - run: npx tsx scripts/acceptance.ts
+
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - run: npm run build:pages
+        env:
+          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY: ${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

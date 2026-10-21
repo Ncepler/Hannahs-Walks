@@ -6,6 +6,8 @@ export const metadata: Metadata = {
   title: APP_NAME,
   description: "A walk planner.",
   robots: { index: false, follow: false },
+  // Also sent as a header by the server build; a static host cannot send headers, so the page says it too.
+  referrer: "strict-origin-when-cross-origin",
 };
 
 export const viewport: Viewport = {
