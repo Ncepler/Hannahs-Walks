@@ -1,6 +1,6 @@
 import type { Pace } from './types';
 
-export const APP_NAME = 'Schnitzel Walks';
+export const APP_NAME = 'Hannah’s Walks';
 
 export const HOME_ID = 'HOME';
 

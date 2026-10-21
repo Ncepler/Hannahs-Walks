@@ -1,8 +1,8 @@
-# CLAUDE.md — Schnitzel Walks
+# CLAUDE.md — Hannah’s Walks
 
 A one-person walk planner for a single home base in Roslyn, NY. Every street, distance and hill in this file comes from research done before the app was written. **The app never researches routes at runtime.** All route data ships in the code as a small graph of "lego" pieces (nodes and segments) that snap together into finished walks.
 
-> Working title: **Schnitzel Walks**. Change `APP_NAME` in `lib/config.ts` if the owner wants another name.
+> App name: **Hannah’s Walks**. Change `APP_NAME` in `lib/config.ts` if the owner wants another name.
 
 ---
 
@@ -1143,7 +1143,7 @@ Rules: `100dvh` for the app shell and any bottom-pinned UI, never `100vh`; never
 - Contrast AA in light and dark; state never color-only.
 - Respect `prefers-reduced-motion`, `prefers-reduced-transparency`, `prefers-contrast`.
 - Dynamic type: layout survives browser text at 200%.
-- Page `lang="en"`. Meaningful `<title>`: "Schnitzel Walks" (no address, no town).
+- Page `lang="en"`. Meaningful `<title>`: "Hannah’s Walks" (no address, no town).
 
 ### 15.10 Do-not list
 
@@ -1157,7 +1157,7 @@ Voice: short, warm, plain. A little dry humor in the toggle only. No exclamation
 
 | Where | Copy |
 |---|---|
-| App name | Schnitzel Walks |
+| App name | Hannah’s Walks |
 | Hero line | Tell me what kind of walk you need. |
 | Toggle (regular) | **One-time schnitzel fee** — Pick a few buttons. Get a walk. |
 | Toggle (premium) | **Monthly schnitzel fee** — Describe the walk. Claude plans it. |
