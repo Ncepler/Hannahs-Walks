@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { COPY } from "@/lib/config";
 import { fmtClimb, fmtMiles, fmtTime, hasBusyRoad, pausePoints, whyThisOne } from "@/lib/describe";
+import { embedUrl, mapsLink, selectWaypoints } from "@/lib/maps";
 import { minutesFor, type PoolRoute } from "@/lib/score";
 import type { Mood, Pace } from "@/lib/types";
+import { CheckRow } from "./CheckRow";
 import { vars } from "./css";
 import { ElevationProfile } from "./ElevationProfile";
 import { Caution, MoodIcon } from "./icons";
+import { MapEmbed } from "./MapEmbed";
 import { RouteSketch } from "./RouteSketch";
 import { useStaged } from "./useStaged";
 
@@ -19,12 +22,14 @@ interface Props {
   note?: string | null;
   onAnother: () => void;
   onChange: () => void;
-  onDirections?: () => void;
-  onMaps?: () => void;
+  onDirections: () => void;
+  /** "Start from Home" adds an origin to the Maps link; otherwise Google starts where she stands. */
+  startFromHome: boolean;
+  onStartFromHome: (v: boolean) => void;
 }
 
 /** The result: route card and sketch. Reveals with a stagger; swaps with a quick fade. */
-export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChange, onDirections, onMaps }: Props) {
+export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChange, onDirections, startFromHome, onStartFromHome }: Props) {
   const { shown: route, phase } = useStaged(incoming, 140, true);
   const title = useRef<HTMLHeadingElement>(null);
 
@@ -34,6 +39,9 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
   }, []);
 
   const pauses = pausePoints(route);
+  const plan = useMemo(() => selectWaypoints(route.path), [route.path]);
+  const embed = embedUrl(route.path, plan.waypoints);
+  const openMaps = () => window.open(mapsLink(route.path, plan.waypoints, { startFromHome }), "_blank", "noopener,noreferrer");
   const stagger = (i: number) => vars({ "--i": i });
 
   return (
@@ -102,12 +110,16 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
         </div>
 
         <div className="rc actions" style={stagger(6)}>
-          <button type="button" className="btn btn-primary pressable" onClick={onMaps} disabled={!onMaps}>
+          <button type="button" className="btn btn-primary pressable" onClick={openMaps}>
             {COPY.actions.maps}
           </button>
-          <button type="button" className="btn btn-secondary pressable" onClick={onDirections} disabled={!onDirections}>
+          <button type="button" className="btn btn-secondary pressable" onClick={onDirections}>
             {COPY.actions.directions}
           </button>
+          <div className="actions-wide">
+            <CheckRow checked={startFromHome} onChange={onStartFromHome} label="Start from Home" />
+            {!plan.exact && <p className="relaxed">{COPY.mapsMismatch}</p>}
+          </div>
           <button type="button" className="btn btn-secondary pressable" onClick={onAnother}>
             {COPY.actions.another}
           </button>
@@ -120,6 +132,8 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
           {COPY.footer}
         </p>
       </article>
+
+      {embed && <MapEmbed src={embed} />}
 
       <aside className="card sketch-card" aria-label="Route sketch">
         <RouteSketch path={route.path} mood={mood} />

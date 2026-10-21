@@ -11,6 +11,7 @@ import {
   type TimeChoice,
 } from "@/lib/score";
 import type { Mood, Pace } from "@/lib/types";
+import { CheckRow } from "./CheckRow";
 import { vars } from "./css";
 import { ChevronLeft, MoodIcon } from "./icons";
 import { useStaged } from "./useStaged";
@@ -313,23 +314,12 @@ export function Wizard({ step, form, onForm, onStep, onPlan, onSurprise }: Props
                 <span className="switch-thumb" />
               </span>
             </button>
-            <button
-              type="button"
-              role="checkbox"
-              aria-checked={returnHome}
-              className="check-row pressable"
-              onClick={() => onForm({ returnHome: !returnHome })}
-            >
-              <span className="check-box" aria-hidden="true">
-                <svg className="check-mark" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m2.5 7.5 3 3 6-7" />
-                </svg>
-              </span>
-              <span>
-                <span className="check-label">End back at Home</span>
-                <span className="check-sub">Uncheck it if you don&rsquo;t need to walk home.</span>
-              </span>
-            </button>
+            <CheckRow
+              checked={returnHome}
+              onChange={(v) => onForm({ returnHome: v })}
+              label="End back at Home"
+              sub="Uncheck it if you don’t need to walk home."
+            />
           </>
         )}
         {shown === 5 && <Chips label="Pace" opts={PACE_OPTS} value={pace} onPick={(v) => pick({ pace: v })} />}

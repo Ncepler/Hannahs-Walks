@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Calculating } from "@/components/Calculating";
+import { Directions } from "@/components/Directions";
 import { BrandMark, Contours } from "@/components/icons";
 import { ModeToggle, type Mode } from "@/components/ModeToggle";
 import { PremiumBox } from "@/components/PremiumBox";
+import { Sheet } from "@/components/Sheet";
 import { RouteCard } from "@/components/RouteCard";
 import { emptyForm, STEP_COUNT, Summary, toAnswers, Wizard, type Form } from "@/components/Wizard";
 import { APP_NAME, COPY, relaxedLine } from "@/lib/config";
 import { joinList } from "@/lib/describe";
+import { selectWaypoints } from "@/lib/maps";
 import { another, plan, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
 import type { Mood, Pace } from "@/lib/types";
 
@@ -24,6 +27,10 @@ export default function Page() {
   const [session, setSession] = useState<PlanSession | null>(null);
   const [route, setRoute] = useState<PoolRoute | null>(null);
   const [planned, setPlanned] = useState<{ mood: Mood; pace: Pace }>({ mood: "clear", pace: "steady" });
+
+  const [dirOpen, setDirOpen] = useState(false);
+  const [startFromHome, setStartFromHome] = useState(false);
+  const plan4 = useMemo(() => (route ? selectWaypoints(route.path) : null), [route]);
 
   const formRef = useRef(form);
   const phaseRef = useRef<Phase>("asking");
@@ -193,11 +200,20 @@ export default function Page() {
                 note={note}
                 onAnother={showAnother}
                 onChange={changeAnswers}
+                onDirections={() => setDirOpen(true)}
+                startFromHome={startFromHome}
+                onStartFromHome={setStartFromHome}
               />
             )}
           </div>
         )}
       </main>
+
+      {dirOpen && route && plan4 && (
+        <Sheet labelledBy="dir-title" onClose={() => setDirOpen(false)}>
+          {(api) => <Directions route={route} pace={planned.pace} plan={plan4} startFromHome={startFromHome} api={api} />}
+        </Sheet>
+      )}
 
       {phase !== "result" && (
         <footer className="wrap page-foot">

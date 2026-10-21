@@ -36,6 +36,7 @@ const PLACE: Record<string, Omit<PausePoint, 'id'> & { noun: string }> = {
 };
 
 export const placeTitle = (id: NodeId): string | undefined => PLACE[id]?.title;
+export const placeNoun = (id: NodeId): string | undefined => PLACE[id]?.noun;
 
 /** Up to two places on the route, landmarks first, then the ridge. */
 export function pausePoints(route: PoolRoute): PausePoint[] {

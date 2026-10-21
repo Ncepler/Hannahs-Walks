@@ -7,6 +7,9 @@ import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
 import { composeAll, composeOneWay } from '../lib/compose';
+import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
+import { embedUrl, mapsLink, selectWaypoints, simulate } from '../lib/maps';
+import { MAPS_MAX_WAYPOINTS } from '../lib/config';
 import { computeStats, isOneWay, LANDMARKS, milesOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
 import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
 import type { Mood } from '../lib/types';
@@ -251,9 +254,74 @@ function oneWay() {
   check('X3', 'unchecked, 60 min: each mood gets at least one one-way pick of 5; checked gets none', missing === 0, shown.join(', '));
 }
 
+function phase4() {
+  section('Directions and maps (Phase 4)');
+  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((n, i) => n === b[i]);
+
+  // A11: at most MAPS_MAX_WAYPOINTS nodes, and either the simulated path matches or the route is flagged approximate.
+  let exact = 0;
+  const wrong: string[] = [];
+  const approx: string[] = [];
+  for (const r of CURATED) {
+    const path = [...r.path];
+    const { waypoints, exact: flag } = selectWaypoints(path);
+    const sim = simulate(['HOME', ...waypoints, 'HOME']);
+    if (waypoints.length > MAPS_MAX_WAYPOINTS) wrong.push(`${r.id}: ${waypoints.length} waypoints`);
+    if (flag !== same(sim, path)) wrong.push(`${r.id}: flag ${flag} disagrees with the simulation`);
+    if (flag) exact++;
+    else approx.push(r.id);
+  }
+  check('A11', `every curated route: at most ${MAPS_MAX_WAYPOINTS} waypoints, and exact or flagged approximate`, wrong.length === 0, `${exact} exact, ${approx.length} approximate (${approx.join(' ')})` + (wrong.length ? `; ${wrong.join('; ')}` : ''));
+
+  // Links
+  const r04 = [...CURATED.find((c) => c.id === 'R04')!.path];
+  const w = selectWaypoints(r04).waypoints;
+  const link = mapsLink(r04, w);
+  const withOrigin = mapsLink(r04, w, { startFromHome: true });
+  const streets = /Birch|Elm|Chestnut|Sycamore|Cypress|Drive|Road|Lane/;
+  check('A11', 'deep link: walking, Home coordinates as destination, pipe-encoded waypoints, no origin, no address', link.startsWith('https://www.google.com/maps/dir/?api=1&') && link.includes('destination=40.80055,-73.62756') && link.includes('travelmode=walking') && (w.length < 2 || link.includes('%7C')) && !link.includes('origin=') && !streets.test(link), link.replace('https://www.google.com/maps/dir/', '…/'));
+  check('A11', '"Start from Home" adds origin with the Home coordinates', withOrigin.includes('origin=40.80055,-73.62756'), 'origin present');
+  const oneWayRoute = getPool().oneWay[0];
+  const owLink = mapsLink(oneWayRoute.path, selectWaypoints(oneWayRoute.path).waypoints);
+  const end = oneWayRoute.path[oneWayRoute.path.length - 1];
+  check('A11', 'one-way link ends at the finish, not Home', owLink.includes(`destination=${NODES[end as keyof typeof NODES].lat},${NODES[end as keyof typeof NODES].lon}`) && !owLink.includes('destination=40.80055,-73.62756'), end);
+  check('A11', 'no Embed URL without a key; with one it is a walking directions URL', embedUrl(r04, w, undefined) === null && (embedUrl(r04, w, 'K') ?? '').includes('/embed/v1/directions?key=K') && (embedUrl(r04, w, 'K') ?? '').includes('mode=walking'), 'ok');
+
+  // Directions
+  const bad: string[] = [];
+  let turnarounds = 0;
+  for (const c of CURATED) {
+    const path = [...c.path];
+    const steps = buildDirections(path);
+    const st = computeStats(path);
+    const first = steps[0];
+    const last = steps[steps.length - 1];
+    if (first.turn !== 'Head out of Home onto') bad.push(`${c.id}: first step "${first.turn}"`);
+    if (last.street !== 'Arrive Home.') bad.push(`${c.id}: last step "${last.street}"`);
+    if (Math.abs(steps.reduce((m, s) => m + s.meters, 0) - st.meters) > 0.01) bad.push(`${c.id}: step meters do not add up`);
+    if (Math.abs(last.cumMeters - st.meters) > 0.01) bad.push(`${c.id}: cumulative ends at ${last.cumMeters}`);
+    let reversals = 0;
+    for (let i = 1; i < path.length - 1; i++) if (path[i - 1] === path[i + 1]) reversals++;
+    const t = steps.filter((s) => s.kind === 'turnaround').length;
+    turnarounds += t;
+    if (t !== reversals) bad.push(`${c.id}: ${t} turnaround steps for ${reversals} reversals`);
+    if (!steps.every((s) => s.street.length > 0)) bad.push(`${c.id}: empty street`);
+    if (!stepsToText(c.name, 'x', steps).includes('1. Head out of Home onto')) bad.push(`${c.id}: copy text`);
+  }
+  check('X4', 'directions for all 22 curated routes: start at Home, arrive Home, distances add up, one turnaround per reversal', bad.length === 0, bad.slice(0, 3).join('; ') || `${turnarounds} turnaround steps`);
+  const words = [turnWord(0), turnWord(50), turnWord(-50), turnWord(80), turnWord(-80), turnWord(170)];
+  check('X4', 'turn words: continue, bear, turn, turn back; softer word near a threshold', words.join(' | ') === 'Continue onto | Bear right onto | Bear left onto | Turn right onto | Turn left onto | Turn back onto' && turnWord(70) === 'Bear right onto' && turnWord(140) === 'Turn right onto', words.join(' | '));
+  check('X4', 'distance display: feet under 0.1 mi, miles otherwise', fmtStepDistance(97.4) === 'about 300 ft' && fmtStepDistance(279.3) === '0.2 mi' && fmtStepDistance(20) === 'about 50 ft', `${fmtStepDistance(97.4)}, ${fmtStepDistance(279.3)}, ${fmtStepDistance(20)}`);
+  const ow = buildDirections(oneWayRoute.path);
+  check('X4', 'a one-way walk ends "Arrive at <place>."', /^Arrive at .+\.$/.test(ow[ow.length - 1].street), ow[ow.length - 1].street);
+  const steep = buildDirections([...CURATED.find((c) => c.id === 'R19')!.path]).filter((s) => s.cue?.includes('steep'));
+  check('X4', 'hill cues: steep stretches on the Ash Drive route are called out', steep.length > 0 && steep.every((s) => /climbs|drops|steep/.test(s.cue!)), steep.map((s) => s.cue).join(' / '));
+}
+
 phase1();
 phase2();
 oneWay();
+phase4();
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
