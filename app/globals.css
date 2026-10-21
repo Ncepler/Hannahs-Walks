@@ -11,6 +11,7 @@
   --ink: #16241C;
   --ink-2: #4A5A50;
   --line: rgb(22 36 28 / 0.12);
+  --field-line: color-mix(in srgb, var(--ink-2) 70%, transparent);  /* text-field borders need 3:1 */
   --forest: #2C5A44;       /* primary action, links */
   --on-forest: #F5F2EA;
   --clear: #4F8F99;        /* mood: clear my head   (mist) */
@@ -207,7 +208,8 @@ button, a, [role="button"], [role="radio"] {
 .pane-left, .pane-right { position: relative; min-width: 0; }
 @media (max-width: 1023.98px) {
   .layout[data-phase="asking"] .pane-right { display: none; }
-  .layout:not([data-phase="asking"]) .pane-left { display: none; }
+  /* Hide everything but the page heading, which must stay in the document on every screen. */
+  .layout:not([data-phase="asking"]) .pane-left > :not(.hero) { display: none; }
 }
 @media (min-width: 1024px) {
   .layout {
@@ -296,7 +298,7 @@ button, a, [role="button"], [role="radio"] {
 .btn-text { color: var(--forest); padding: 0 12px; }
 .btn-text:active:not(:disabled) { background: color-mix(in srgb, var(--forest) 12%, transparent); }
 .grow { flex: 1; }
-.bar-gap { flex: 1; }
+.bar-gap { flex: 1 1 0; }
 
 .back-btn {
   width: 44px;
@@ -467,6 +469,7 @@ button, a, [role="button"], [role="radio"] {
   bottom: 0;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 16px;
@@ -658,7 +661,7 @@ button, a, [role="button"], [role="radio"] {
   padding: 14px 16px 34px;
   resize: none;
   border-radius: 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   background: var(--surface-solid);
   color: var(--ink);
   font: inherit;
@@ -772,12 +775,26 @@ button, a, [role="button"], [role="radio"] {
 }
 
 /* Directions content */
-.dir-head { flex: none; padding: 0 20px 8px; touch-action: none; }
+/* The header yields before the action row does: only matters at very large text on a small screen. */
+.dir-head { flex: 0 1 auto; min-height: 0; overflow: hidden; padding: 0 20px 4px; touch-action: none; }
 .panel .dir-head { padding-top: 20px; touch-action: auto; }
 .dir-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.dir-title { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance; }
+.dir-title {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; /* at very large text the title must not squeeze out the action row */
+  line-clamp: 3;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
 .dir-meta { margin: 6px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
-.dir-explain { margin: 4px 0 0; font-size: 0.9375rem; color: var(--ink-2); text-wrap: pretty; }
+.dir-explain { margin: 0 0 8px; padding: 0 12px; font-size: 0.9375rem; color: var(--ink-2); text-wrap: pretty; }
 
 .dir-scroll {
   flex: 1;
@@ -867,4 +884,11 @@ button, a, [role="button"], [role="radio"] {
   .panel { transition: opacity 200ms ease; }
   .panel[data-state="pre"], .panel[data-state="out"] { transform: none; }
   .dir-step:active { transform: none; }
+}
+
+/* Reduced transparency and more contrast: opaque surfaces, no backdrop filter at all.
+   Kept at the end of the file so it outranks the component rules above. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .topbar, .card, .sheet, .panel, .bar::before { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .bar::before { background: var(--bg); }
 }

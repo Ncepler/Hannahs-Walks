@@ -66,24 +66,29 @@ export function toAnswers(f: Form, mood: Mood): Answers {
 interface Opt<T extends string> {
   value: T;
   label: string;
-  aria?: string;
+  /** The same thing in full words: used in the summary and read after the label by screen readers. */
+  say?: string;
 }
 
+/** Hidden text that follows the visible label, so the accessible name still begins with what is on screen. */
+const spokenTail = (label: string, say?: string) =>
+  !say || say === label ? "" : say.startsWith(label) ? say.slice(label.length) : ` (${say})`;
+
 const TIME_OPTS: Opt<TimeKey>[] = [
-  { value: "15", label: "15 min", aria: "15 minutes" },
-  { value: "30", label: "30", aria: "30 minutes" },
-  { value: "45", label: "45", aria: "45 minutes" },
-  { value: "60", label: "1 hr", aria: "1 hour" },
-  { value: "90", label: "1½ hr", aria: "1 and a half hours" },
-  { value: "120+", label: "2 hr +", aria: "2 hours or more" },
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30", say: "30 minutes" },
+  { value: "45", label: "45", say: "45 minutes" },
+  { value: "60", label: "1 hr", say: "1 hour" },
+  { value: "90", label: "1½ hr", say: "1 and a half hours" },
+  { value: "120+", label: "2 hr +", say: "2 hours or more" },
   { value: "none", label: "No limit" },
 ];
 const DIST_OPTS: Opt<DistKey>[] = [
-  { value: "<1", label: "Under 1 mi", aria: "Under 1 mile" },
-  { value: "1-2", label: "1 – 2", aria: "1 to 2 miles" },
-  { value: "2-3", label: "2 – 3", aria: "2 to 3 miles" },
-  { value: "3-5", label: "3 – 5", aria: "3 to 5 miles" },
-  { value: "5+", label: "5 +", aria: "5 miles or more" },
+  { value: "<1", label: "Under 1 mi", say: "Under 1 mile" },
+  { value: "1-2", label: "1 – 2", say: "1 to 2 miles" },
+  { value: "2-3", label: "2 – 3", say: "2 to 3 miles" },
+  { value: "3-5", label: "3 – 5", say: "3 to 5 miles" },
+  { value: "5+", label: "5 +", say: "5 miles or more" },
   { value: "fit", label: "Whatever fits my time" },
 ];
 const HILL_OPTS: Opt<Hills>[] = [
@@ -124,9 +129,9 @@ export function summaryRows(f: Form): { label: string; value: string }[] {
   const rows: { label: string; value: string }[] = [];
   if (f.mood) rows.push({ label: "Walk", value: COPY.moods[f.mood].label });
   const t = labelOf(TIME_OPTS, f.time);
-  if (t) rows.push({ label: "Time", value: t.aria ?? t.label });
+  if (t) rows.push({ label: "Time", value: t.say ?? t.label });
   const d = labelOf(DIST_OPTS, f.distance);
-  if (d) rows.push({ label: "Distance", value: d.aria ?? d.label });
+  if (d) rows.push({ label: "Distance", value: d.say ?? d.label });
   const h = labelOf(HILL_OPTS, f.hills);
   if (h) rows.push({ label: "Hills", value: h.label });
   if (f.stops.length) rows.push({ label: "Along the way", value: f.stops.map((s) => labelOf(STOP_OPTS, s)!.label).join(", ") });
@@ -161,10 +166,10 @@ function Chips<T extends string>({
           type="button"
           className="chip pressable"
           aria-pressed={value === o.value}
-          aria-label={o.aria}
           onClick={() => onPick(o.value)}
         >
           {o.label}
+          {spokenTail(o.label, o.say) && <span className="sr-only">{spokenTail(o.label, o.say)}</span>}
         </button>
       ))}
     </div>

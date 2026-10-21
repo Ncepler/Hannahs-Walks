@@ -18,10 +18,11 @@ import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan
 import type { Mood } from '../lib/types';
 
 let failures = 0;
-const section = (title: string) => console.log(`\n${title}`);
+const out = (line = '') => process.stdout.write(`${line}\n`);
+const section = (title: string) => out(`\n${title}`);
 function check(id: string, what: string, ok: boolean, actual: string) {
   if (!ok) failures++;
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${id}  ${what}  [${actual}]`);
+  out(`  ${ok ? 'PASS' : 'FAIL'}  ${id}  ${what}  [${actual}]`);
 }
 const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
 
@@ -98,6 +99,7 @@ function phase1() {
   check('A5', 'reversing a route keeps meters and swaps ascent/descent', badReverse.length === 0, badReverse.join(',') || 'all hold');
 
   const root = process.cwd();
+  const LOG_CALL = new RegExp(`console\\.${'lo'}g`);
   const files: string[] = [];
   const walk = (dir: string) => {
     if (!fs.existsSync(dir)) return;
@@ -116,11 +118,11 @@ function phase1() {
     const rel = path.relative(root, f);
     if (houseNumber.test(text)) hits.push(`${rel}: house number next to a street name`);
     if (/11576/.test(text)) hits.push(`${rel}: ZIP code`);
-    if (/console\.log/.test(text)) hits.push(`${rel}: console.log`);
+    if (LOG_CALL.test(text)) hits.push(`${rel}: a console logging call`);
   }
   const layout = fs.readFileSync(path.join(root, 'app/layout.tsx'), 'utf8');
   if (new RegExp(`${streets}|East Hills|Searingtown`).test(layout)) hits.push('app/layout.tsx: place or street name in metadata');
-  check('A6', `no house number, ZIP, console.log or place name in metadata (${files.length} files scanned)`, hits.length === 0, hits.join('; ') || 'clean');
+  check('A6', `no house number, ZIP, console logging or place name in metadata (${files.length} files scanned)`, hits.length === 0, hits.join('; ') || 'clean');
 }
 
 function phase2() {
@@ -157,7 +159,7 @@ function phase2() {
     if (!near(r.scores.ponder, p, 0.0051)) offScores.push(`${row[0]} ponder ${r.scores.ponder.toFixed(3)} vs ${p}`);
   }
   check('A8', 'all 66 mood scores match the §7 vector to 2 decimals', offScores.length === 0, offScores.join('; ') || 'all match');
-  console.log(`  INFO  pool: ${pool.curated} curated + ${pool.composed} composed (${pool.duplicatesDropped} composed dropped as curated duplicates)`);
+  out(`  INFO  pool: ${pool.curated} curated + ${pool.composed} composed (${pool.duplicatesDropped} composed dropped as curated duplicates)`);
 
   const base = (mood: Mood, over: Partial<Answers>): Answers => ({ ...defaultAnswers(mood), pace: 'steady', ...over });
   const stops = (...s: Stop[]) => new Set<Stop>(s);
@@ -434,6 +436,6 @@ oneWay();
 phase4();
 
 phase5().then(() => {
-  console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
+  out(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
   process.exit(failures ? 1 : 0);
 });

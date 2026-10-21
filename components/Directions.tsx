@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { COPY } from "@/lib/config";
 import { buildDirections, fmtCumulative, fmtStepDistance, stepsToText } from "@/lib/directions";
 import { fmtMiles, fmtTime } from "@/lib/describe";
@@ -53,6 +53,18 @@ export function Directions({
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const list = useRef<HTMLOListElement>(null);
   const timer = useRef(0);
+  const head = useRef<HTMLDivElement>(null);
+  const foot = useRef<HTMLDivElement>(null);
+
+  // With very large text the header and the action row can no longer share the first stop with the
+  // list, so start at the top stop instead. (After the sheet's own opening move has begun.)
+  useEffect(() => {
+    if (api.desktop) return;
+    const need = 28 + (head.current?.offsetHeight ?? 0) + (foot.current?.offsetHeight ?? 0) + 96;
+    if (need <= window.innerHeight * 0.6) return;
+    const r = requestAnimationFrame(() => api.expand());
+    return () => cancelAnimationFrame(r);
+  }, []);
 
   const mark = (i: number) => {
     const next = here === i ? null : i;
@@ -79,7 +91,7 @@ export function Directions({
 
   return (
     <>
-      <header className="dir-head" data-drag>
+      <div className="dir-head" data-drag ref={head}>
         <div className="dir-head-row">
           <h2 id="dir-title" className="dir-title">
             {route.name}
@@ -91,11 +103,11 @@ export function Directions({
           </button>
         </div>
         <p className="dir-meta">{summary}</p>
-        <p className="dir-explain">{COPY.directionsHeader}</p>
-        {!plan.exact && <p className="dir-explain">{COPY.mapsMismatch}</p>}
-      </header>
+      </div>
 
       <div className="dir-scroll" data-scroll>
+        <p className="dir-explain">{COPY.directionsHeader}</p>
+        {!plan.exact && <p className="dir-explain">{COPY.mapsMismatch}</p>}
         <ol className="dir-list" ref={list}>
           {steps.map((s, i) => (
             <li key={i}>
@@ -129,7 +141,7 @@ export function Directions({
         </ol>
       </div>
 
-      <motion.footer className="dir-foot" data-nodrag style={api.lift ? { transform: api.lift } : undefined}>
+      <motion.div className="dir-foot" data-nodrag ref={foot} style={api.lift ? { transform: api.lift } : undefined}>
         <button type="button" className="btn btn-primary pressable grow" onClick={openMaps}>
           {COPY.actions.maps}
         </button>
@@ -142,7 +154,7 @@ export function Directions({
         <span className="sr-only" aria-live="polite">
           {copied === "done" ? "Steps copied" : copied === "failed" ? "Could not copy" : ""}
         </span>
-      </motion.footer>
+      </motion.div>
     </>
   );
 }

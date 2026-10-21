@@ -236,7 +236,7 @@ export function Sheet({
 
   if (desktop) {
     return createPortal(
-      <aside
+      <div
         ref={(el) => {
           root.current = el;
         }}
@@ -248,7 +248,7 @@ export function Sheet({
         onKeyDown={onKeyDown}
       >
         {children(api)}
-      </aside>,
+      </div>,
       document.body,
     );
   }

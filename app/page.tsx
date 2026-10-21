@@ -267,7 +267,7 @@ export default function Page() {
       <main className="wrap layout" data-phase={showing}>
         <div className="pane-left" inert={showing === "calculating"}>
           <Contours />
-          <h1 className="hero" data-compact={regular && !startOfFlow}>
+          <h1 className="hero" data-compact={regular ? !startOfFlow : showing !== "asking"}>
             {COPY.hero}
           </h1>
           <div hidden={!regular}>
