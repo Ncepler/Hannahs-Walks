@@ -6,7 +6,10 @@ import { CURATED } from '../data/curated';
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { METERS_PER_MILE } from '../lib/config';
-import { computeStats, reversalHolds, segmentsBetween, validatePath } from '../lib/graph';
+import { composeAll } from '../lib/compose';
+import { computeStats, milesOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
+import { another, apmOf, defaultAnswers, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
+import type { Mood } from '../lib/types';
 
 let failures = 0;
 const section = (title: string) => console.log(`\n${title}`);
@@ -114,7 +117,88 @@ function phase1() {
   check('A6', `no house number, ZIP, console.log or place name in metadata (${files.length} files scanned)`, hits.length === 0, hits.join('; ') || 'clean');
 }
 
+function phase2() {
+  section('Composer and scoring (Phase 2)');
+
+  const comp = composeAll();
+  const bad = comp.walks.filter((w) => !validatePath(w.path).ok).length;
+  const outside = comp.walks.filter((w) => {
+    const mi = milesOf(w.path);
+    return mi < 0.4 || mi > 7.5;
+  }).length;
+  const multisets = new Set(comp.walks.map((w) => traverse(w.path).map((t) => t.seg.id).sort().join(','))).size;
+  check('A7', '116 simple cycles', comp.cycles === 116, `${comp.cycles}`);
+  check('A7', '3,296 closed walks', comp.walks.length === 3296, `${comp.walks.length} in ${comp.ms.toFixed(0)} ms`);
+  check('A7', 'all walks pass the validators, none outside 0.4 - 7.5 mi', bad === 0 && outside === 0, `${bad} invalid, ${outside} out of range`);
+  check('A7', '2,307 distinct segment multisets', multisets === 2307, `${multisets}`);
+
+  const pool = getPool();
+  const curated = pool.routes.filter((r) => r.origin === 'curated');
+  const top = (mood: Mood, n: number) => [...curated].sort((a, b) => b.scores[mood] - a.scores[mood]).slice(0, n).map((r) => r.id);
+  const inSet = (ids: string[], allowed: string[]) => ids.every((id) => allowed.includes(id));
+  const clearTop = top('clear', 3);
+  const workTop = top('workout', 4);
+  const ponderTop = top('ponder', 4);
+  check('A8', 'clear: top 3 within {R02,R04,R05,R06,R08,R22}', inSet(clearTop, ['R02', 'R04', 'R05', 'R06', 'R08', 'R22']), clearTop.join(' '));
+  check('A8', 'workout: top 4 within {R14,R15,R16,R18,R19}, R18 and R19 first two', inSet(workTop, ['R14', 'R15', 'R16', 'R18', 'R19']) && inSet(workTop.slice(0, 2), ['R18', 'R19']), workTop.join(' '));
+  check('A8', 'ponder: top 4 within {R04,R08,R15,R16,R18}, R18 or R08 first', inSet(ponderTop, ['R04', 'R08', 'R15', 'R16', 'R18']) && ['R18', 'R08'].includes(ponderTop[0]), ponderTop.join(' '));
+  const offScores: string[] = [];
+  for (const row of VECTOR) {
+    const r = curated.find((c) => c.id === row[0])!;
+    const [, , , , , , , , c, w, p] = row;
+    if (!near(r.scores.clear, c, 0.0051)) offScores.push(`${row[0]} clear ${r.scores.clear.toFixed(3)} vs ${c}`);
+    if (!near(r.scores.workout, w, 0.0051)) offScores.push(`${row[0]} work ${r.scores.workout.toFixed(3)} vs ${w}`);
+    if (!near(r.scores.ponder, p, 0.0051)) offScores.push(`${row[0]} ponder ${r.scores.ponder.toFixed(3)} vs ${p}`);
+  }
+  check('A8', 'all 66 mood scores match the §7 vector to 2 decimals', offScores.length === 0, offScores.join('; ') || 'all match');
+  console.log(`  INFO  pool: ${pool.curated} curated + ${pool.composed} composed (${pool.duplicatesDropped} composed dropped as curated duplicates)`);
+
+  const base = (mood: Mood, over: Partial<Answers>): Answers => ({ ...defaultAnswers(mood), pace: 'steady', ...over });
+  const stops = (...s: Stop[]) => new Set<Stop>(s);
+
+  const a1 = base('clear', { time: { min: 30 }, hills: 'flat', avoidBusy: true });
+  const r1 = rank(a1);
+  const t1 = r1.ranked[0];
+  check('A9', 'clear, 30 min, flat, avoid busy: 24 - 36 min, apm <= 70, busy <= 0.10, nothing relaxed', !!t1 && r1.relaxed.length === 0 && t1.minutes >= 24 && t1.minutes <= 36 && apmOf(t1.route.stats) <= 70 && t1.route.stats.busyShare <= 0.1, `${t1?.route.name}: ${t1?.minutes.toFixed(0)} min, apm ${t1 ? apmOf(t1.route.stats).toFixed(0) : '-'}; ${r1.count} candidates in the pool`);
+
+  const a2 = base('workout', { time: { min: 90 }, hills: 'hilly' });
+  const r2 = rank(a2);
+  const t2 = r2.ranked[0];
+  check('A9', 'workout, 90 min, hilly: 72 - 108 min, apm > 100, nothing relaxed', !!t2 && r2.relaxed.length === 0 && t2.minutes >= 72 && t2.minutes <= 108 && apmOf(t2.route.stats) > 100, `${t2?.route.name}: ${t2?.minutes.toFixed(0)} min, apm ${t2 ? apmOf(t2.route.stats).toFixed(0) : '-'}; ${r2.count} candidates in the pool`);
+
+  const a3 = base('ponder', { stops: stops('museum') });
+  const r3 = rank(a3);
+  check('A9', 'ponder with stop museum: visits NCMA', r3.relaxed.length === 0 && !!r3.ranked[0]?.route.visited.has('NCMA'), `${r3.ranked[0]?.route.name}; ${r3.count} candidates`);
+
+  const a4 = base('ponder', { time: { min: 120, orMore: true }, stops: stops('cedarmere', 'museum') });
+  const r4 = rank(a4);
+  const t4 = r4.ranked[0];
+  check('A9', 'ponder, 2 hr +, Cedarmere + museum: visits both', r4.relaxed.length === 0 && !!t4 && t4.route.visited.has('NCMA') && t4.route.visited.has('CEDARMERE') && t4.minutes >= 100, `${t4?.route.name}: ${t4?.minutes.toFixed(0)} min; ${r4.count} candidates in the pool`);
+
+  // The reference run counts composed walks before curated duplicates are dropped from the pool.
+  const composedAll = comp.walks.map((w) => ({ path: w.path, stats: computeStats(w.path) }));
+  const refCount = (pred: (x: (typeof composedAll)[number], minutes: number) => boolean) =>
+    composedAll.filter((x) => pred(x, minutesFor(x.stats, 'steady'))).length;
+  const n1 = refCount((x, m) => m >= 24 && m <= 36 && apmOf(x.stats) <= 70 && x.stats.busyShare <= 0.1);
+  const n2 = refCount((x, m) => m >= 72 && m <= 108 && apmOf(x.stats) > 100);
+  const n4 = refCount((x, m) => m >= 100 && x.path.includes('NCMA') && x.path.includes('CEDARMERE'));
+  check('A9', 'reference candidate counts reproduce (composed walks, before curated dedupe): 4, 30, 223', n1 === 4 && n2 === 30 && n4 === 223, `${n1}, ${n2}, ${n4}`);
+
+  const repeats: string[] = [];
+  for (const answers of [defaultAnswers('ponder'), a1, a4, defaultAnswers('workout')]) {
+    const session = plan(answers);
+    let prev = session.current.id;
+    for (let i = 0; i < 100; i++) {
+      const next = another(session).id;
+      if (next === prev) repeats.push(`${answers.mood}@${i}`);
+      prev = next;
+    }
+  }
+  check('A10', '100 "Show me another" calls on 4 different sessions never repeat a route back to back', repeats.length === 0, repeats.join(',') || '400 calls, 0 repeats');
+}
+
 phase1();
+phase2();
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
