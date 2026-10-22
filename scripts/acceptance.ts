@@ -23,6 +23,13 @@ import { checkPath, forbiddenRoadOf, FORBIDDEN_ASK, GLEN_COVE_CROSSINGS, isLegal
 import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, reachedByOneDoor, type Answers, type Stop } from '../lib/score';
 import type { Mood, Segment } from '../lib/types';
 import { runRuleVectors } from './rules-vectors';
+import { decodePolyline, encodePolyline, type LatLon } from '../lib/polyline';
+import { pathLengthM } from '../lib/geo';
+import { routeGeometry } from '../lib/routeGeometry';
+import { buildScene, geomOf, SEED_ONLY } from '../lib/mapScene';
+import { elevationSamples, ascentDescent } from '../lib/elevation';
+import { haversineM } from '../lib/geo';
+import { COPY, MAP_COPY } from '../lib/config';
 
 let failures = 0;
 const out = (line = '') => process.stdout.write(`${line}\n`);
@@ -192,7 +199,7 @@ function rules() {
   };
   for (const d of ['app', 'components', 'lib', 'data']) walkDir(path.join(root, d));
   const museumHits = all.filter((f) => !f.endsWith(path.join('data', 'expected-streets.ts')) && /museum/i.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(root, f));
-  const ROAD_COPY_OK = new Set(['lib/rules.ts', 'lib/crossingCopy.ts', 'lib/config.ts', 'lib/ai.ts', 'data/nodes.ts', 'data/segments.ts', 'data/curated.ts', 'data/barrier-links.ts', 'data/expected-streets.ts']);
+  const ROAD_COPY_OK = new Set(['lib/rules.ts', 'lib/crossingCopy.ts', 'lib/config.ts', 'lib/mapScene.ts', 'lib/ai.ts', 'data/nodes.ts', 'data/segments.ts', 'data/curated.ts', 'data/barrier-links.ts', 'data/expected-streets.ts']);
   const roadHits = all
     .map((f) => path.relative(root, f))
     .filter((f) => !ROAD_COPY_OK.has(f) && /Northern Blvd|Northern Boulevard|Glen Cove/.test(fs.readFileSync(path.join(root, f), 'utf8')));
@@ -706,8 +713,54 @@ async function phase5() {
   check('X5', 'cross-host planner: bearer token reads as the cookie; CORS is off by default and echoes only listed origins', bearer && offByDefault && listedOnly && strangers && answers, `bearer ${bearer}, default off ${offByDefault}, listed ${listedOnly}, strangers refused ${strangers}, preflight ${pre.status}`);
 }
 
+// The map (ROADS-ADDENDUM §7, §9: A21, A22)
+function stage3() {
+  section('The map (Stage 3)');
+  const line: LatLon[] = [[40.80055, -73.62756], [40.80123, -73.62611], [40.7999, -73.6357], [40.7949, -73.62345]];
+  const back = decodePolyline(encodePolyline(line));
+  check('A21', 'decodePolyline(encodePolyline(p)) equals p within 1e-5', back.length === line.length && back.every((p, i) => near(p[0], line[i]![0], 1e-5) && near(p[1], line[i]![1], 1e-5)), `${back.length} points`);
+
+  const gen = (SEGMENTS as readonly Segment[]).some((x) => x.geom);
+  if (!gen) {
+    const approx = CURATED.every((c) => routeGeometry(c.path as readonly string[], segmentBetween, geomOf, graphNodes).approximate && buildScene([...c.path]).approximate);
+    const dashed = CURATED.every((c) => {
+      const g = routeGeometry(c.path as readonly string[], segmentBetween, geomOf, graphNodes);
+      return g.points.length === c.path.length; // seed mode: a straight chord between node coordinates, nothing invented
+    });
+    check('A21', 'seed mode: every route is drawn as chords between node coordinates and shows the "Approximate" chip', SEED_ONLY && approx && dashed && MAP_COPY.approximate === 'Approximate', `${CURATED.length} routes, seed-only ${SEED_ONLY}`);
+    out('  INFO  A21 (1.5 % length) and A22 (12 m from a barrier) need Stage 2 geometry: no segment has `geom`, so they are not run');
+  } else {
+    const off: string[] = [];
+    for (const c of CURATED) {
+      const g = routeGeometry(c.path as readonly string[], segmentBetween, geomOf, graphNodes);
+      const want = computeStats([...c.path]).meters;
+      if (Math.abs(pathLengthM(g.points) - want) / want > 0.015) off.push(`${c.id}`);
+    }
+    check('A21', 'generated mode: drawn length within 1.5 % of meters for every curated route', off.length === 0, off.join(',') || 'all within 1.5 %');
+    const near12: string[] = [];
+    const nodesNear = (pt: LatLon, ids: readonly string[], m: number) => ids.some((id) => haversineM(pt, [graphNodes[id]!.lat, graphNodes[id]!.lon]) <= m);
+    const ends = Object.values(graphNodes).filter((n) => n.kind === 'terminus' || n.id === 'GC_MIDWOOD' || n.id === 'GCX_E').map((n) => n.id);
+    for (const c of CURATED) {
+      const g = routeGeometry(c.path as readonly string[], segmentBetween, geomOf, graphNodes);
+      for (const pt of g.points) for (const b of BARRIER_LINKS) {
+        const a = graphNodes[b.a]!;
+        const z = graphNodes[b.b]!;
+        const d = Math.min(haversineM(pt, [a.lat, a.lon]), haversineM(pt, [z.lat, z.lon]));
+        if (d < 12 && !nodesNear(pt, ends, 40)) near12.push(`${c.id}`);
+      }
+    }
+    check('A22', 'no drawn point of a curated route lies within 12 m of a barrier, except within 40 m of X01 or a terminus', near12.length === 0, [...new Set(near12)].join(',') || 'clear');
+  }
+  const flat = elevationSamples(CURATED[0]!.path as readonly string[], segmentBetween);
+  const ad = ascentDescent([0, 0, 10, 10, 10, 4, 4, 5]);
+  check('A21', 'elevation: seed mode has no samples (node-to-node); the deadband ignores changes under 2 ft', flat === null && ad.ascentFt === 10 && ad.descentFt === 6, `${flat === null ? 'node-to-node' : 'samples'}; +${ad.ascentFt} -${ad.descentFt}`);
+  check('A21', 'footer and README carry the OpenStreetMap and USGS attribution', COPY.footer.includes('Map data © OpenStreetMap contributors') && COPY.footer.includes('Elevation: USGS 3DEP') && fs.readFileSync('README.md', 'utf8').includes('Map data © OpenStreetMap contributors · Elevation: USGS 3DEP'), 'ok');
+  check('A21', 'RouteSketch is gone', !fs.existsSync('components/RouteSketch.tsx') && !fs.readFileSync('components/RouteCard.tsx', 'utf8').includes('RouteSketch'), 'deleted');
+}
+
 phase1();
 rules();
+stage3();
 phase2();
 oneWay();
 phase4();

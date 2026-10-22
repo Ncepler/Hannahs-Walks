@@ -21,6 +21,18 @@ export const CLIMB_MIN_PER_100FT = 3;
 
 export const PREMIUM_MAX_CHARS = 600;
 
+/** The street background (MapLibre + OpenFreeMap) contacts a third party, so it is off until chosen (ROADS-ADDENDUM §7.6). */
+export const DEFAULT_BASEMAP = false;
+export const MAP_ATTRIBUTION = 'Map data © OpenStreetMap contributors';
+export const BASEMAP_ATTRIBUTION = '© OpenMapTiles · Data from OpenStreetMap · OpenFreeMap';
+export const MAP_COPY = {
+  notWalked: 'Not walked',
+  crossing: 'Cross at the signal · wait about a minute',
+  approximate: 'Approximate',
+  basemapToggle: 'Show streets background',
+  basemapHelp: 'Loads map tiles from OpenFreeMap, which can see your IP and the area you view.',
+} as const;
+
 export const COPY = {
   hero: 'Tell me what kind of walk you need.',
   toggleRegular: { label: 'One-time schnitzel fee', sub: 'Pick a few buttons. Get a walk.' },
@@ -50,7 +62,7 @@ export const COPY = {
   mapsRisky: 'Google may take Glen Cove Road or Northern Boulevard between pins. Follow the Directions list instead.',
   rulesCaveat: "I don't route along Glen Cove Road or Northern Boulevard.",
   crossingChip: 'Crosses Glen Cove Rd at the signal',
-  footer: 'Distances are approximate. Street data © OpenStreetMap contributors.',
+  footer: 'Distances are approximate. Map data © OpenStreetMap contributors · Elevation: USGS 3DEP',
   premiumPlaceholder: 'Describe the walk you want…',
   premiumExamples: [
     'Flat and quiet, about 30 minutes, I need to stop thinking.',

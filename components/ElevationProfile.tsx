@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { placeTitle } from "@/lib/describe";
+import { elevationSamples } from "@/lib/elevation";
 import { nodes, segmentBetween } from "@/lib/graph";
 import type { Mood, NodeId } from "@/lib/types";
 import { vars } from "./css";
@@ -57,7 +58,18 @@ function describeProfile(pts: Pt[]): string {
 const PAD = { l: 8, r: 8, t: 24, b: 8 };
 
 /** Sampled elevation along the walk: the nodes joined by straight lines. */
-export function ElevationProfile({ path, mood }: { path: readonly NodeId[]; mood: Mood }) {
+export function ElevationProfile({
+  path,
+  mood,
+  scrubM = null,
+  onScrub,
+}: {
+  path: readonly NodeId[];
+  mood: Mood;
+  /** Metres along the walk under the scrub, shared with the map's dot. */
+  scrubM?: number | null;
+  onScrub?: (m: number | null) => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -71,8 +83,11 @@ export function ElevationProfile({ path, mood }: { path: readonly NodeId[]; mood
     return () => ro.disconnect();
   }, []);
 
-  const { pts, total } = useMemo(() => sample(path), [path]);
-  const summary = useMemo(() => describeProfile(pts), [pts]);
+  const { pts: nodePts, total } = useMemo(() => sample(path), [path]);
+  // Stored samples when every step has them (generated mode); otherwise the nodes joined by straight lines.
+  const samples = useMemo(() => elevationSamples(path, segmentBetween), [path]);
+  const pts = useMemo<Pt[]>(() => (samples ? samples.x.map((x, i) => ({ x, y: samples.y[i]!, node: path[0]! })) : nodePts), [samples, nodePts, path]);
+  const summary = useMemo(() => describeProfile(nodePts), [nodePts]);
 
   const { w, h } = size;
   const ready = w > 0 && h > 0;
@@ -88,10 +103,10 @@ export function ElevationProfile({ path, mood }: { path: readonly NodeId[]; mood
   const area = `${line} L${sx(total).toFixed(1)} ${(h - PAD.b).toFixed(1)} L${sx(0).toFixed(1)} ${(h - PAD.b).toFixed(1)} Z`;
 
   // Pins: each landmark once (first visit) and the highest point, unless a landmark already marks it.
-  const highest = pts.reduce((a, b) => (b.y > a.y ? b : a));
+  const highest = nodePts.reduce((a, b) => (b.y > a.y ? b : a));
   const marks: { pt: Pt; label: string }[] = [];
   const seen = new Set<NodeId>();
-  for (const p of pts) {
+  for (const p of nodePts) {
     const t = nodes[p.node].kind === "poi" ? placeTitle(p.node) : undefined;
     if (t && !seen.has(p.node)) {
       seen.add(p.node);
@@ -114,14 +129,49 @@ export function ElevationProfile({ path, mood }: { path: readonly NodeId[]; mood
     return { ...m, cx, left, width, show };
   });
 
+  const scrubTo = (e: { clientX: number; currentTarget: EventTarget }) => {
+    if (!onScrub || !ready) return;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const f = (e.clientX - r.left - PAD.l) / Math.max(w - PAD.l - PAD.r, 1);
+    onScrub(Math.max(0, Math.min(1, f)) * total);
+  };
+  const scrubY = (() => {
+    if (scrubM === null) return null;
+    let i = 1;
+    while (i < pts.length - 1 && pts[i]!.x < scrubM) i++;
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    const t = b.x === a.x ? 0 : Math.max(0, Math.min(1, (scrubM - a.x) / (b.x - a.x)));
+    return a.y + (b.y - a.y) * t;
+  })();
+
   return (
     <figure className="profile-fig" style={{ color: `var(--${mood})` }}>
-      <figcaption className="eyebrow">Elevation (sampled)</figcaption>
-      <div className="profile" ref={box}>
+      <figcaption className="eyebrow">{samples ? "Elevation (sampled)" : "Elevation"}</figcaption>
+      <div
+        className="profile"
+        ref={box}
+        data-nodrag
+        onPointerDown={(e) => {
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          scrubTo(e);
+        }}
+        onPointerMove={(e) => (e.buttons || e.pointerType === "mouse") && scrubTo(e)}
+        onPointerUp={() => onScrub?.(null)}
+        onPointerLeave={() => onScrub?.(null)}
+        onPointerCancel={() => onScrub?.(null)}
+      >
         {ready && (
           <svg className="profile-svg" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true" focusable="false">
             <path d={area} fill="currentColor" fillOpacity="0.14" />
             <path d={line} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {scrubM !== null && scrubY !== null && (
+              <g aria-hidden="true">
+                <line x1={sx(scrubM)} x2={sx(scrubM)} y1={PAD.t - 6} y2={h - PAD.b} stroke="var(--ink)" strokeWidth="1.25" strokeDasharray="3 3" />
+                <circle cx={sx(scrubM)} cy={sy(scrubY)} r="5" fill="var(--sun)" stroke="var(--ink)" strokeWidth="1.75" />
+                <text x={Math.min(w - 44, Math.max(2, sx(scrubM) + 6))} y={PAD.t - 8} className="pin-label">{Math.round(scrubY)} ft</text>
+              </g>
+            )}
             {labelled.map((m, i) => (
               <g key={m.pt.node + i} className="pin" style={vars({ "--k": i })}>
                 <line x1={m.cx} x2={m.cx} y1={sy(m.pt.y)} y2={sy(m.pt.y) - 7} stroke="currentColor" strokeWidth="1.25" />

@@ -1,42 +1,69 @@
-import { nodes } from './graph';
-import type { NodeId } from './types';
+// FILE: lib/geo.ts
+import type { LatLon } from './polyline';
 
-const rad = (d: number) => (d * Math.PI) / 180;
+const R_EARTH_M = 6_371_008.8;
+const rad = (d: number): number => (d * Math.PI) / 180;
 
-/** Great-circle initial bearing between two nodes, degrees clockwise from north. */
-export function bearing(a: NodeId, b: NodeId): number {
-  const p1 = rad(nodes[a].lat);
-  const p2 = rad(nodes[b].lat);
-  const dl = rad(nodes[b].lon - nodes[a].lon);
-  const y = Math.sin(dl) * Math.cos(p2);
-  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+export function haversineM(a: LatLon, b: LatLon): number {
+  const dLat = rad(b[0] - a[0]);
+  const dLon = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-/** Signed turn from one heading to the next, -180..180; positive is a right turn. */
-export function turnDelta(from: number, to: number): number {
-  return ((((to - from) % 360) + 540) % 360) - 180;
+export function cumulativeM(pts: readonly LatLon[]): number[] {
+  const out: number[] = [0];
+  for (let i = 1; i < pts.length; i++) out.push(out[i - 1]! + haversineM(pts[i - 1]!, pts[i]!));
+  return out;
 }
 
-const M_PER_DEG = 111320;
-/** Local planar metres, good enough for distances of a few miles. */
-export function planar(id: NodeId): [number, number] {
-  const k = Math.cos(rad(nodes.HOME.lat));
-  return [nodes[id].lon * k * M_PER_DEG, nodes[id].lat * M_PER_DEG];
+export function pathLengthM(pts: readonly LatLon[]): number {
+  const c = cumulativeM(pts);
+  return c[c.length - 1] ?? 0;
 }
 
-/** Straight-line distance from a node to the polyline through `line`, metres. */
-export function distToPolyline(id: NodeId, line: readonly NodeId[]): number {
-  const [px, py] = planar(id);
-  let best = Infinity;
-  for (let i = 0; i < line.length; i++) {
-    const [ax, ay] = planar(line[i]);
-    const [bx, by] = i + 1 < line.length ? planar(line[i + 1]) : [ax, ay];
-    const dx = bx - ax;
-    const dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
-    best = Math.min(best, Math.hypot(px - (ax + t * dx), py - (ay + t * dy)));
+/** Point at `distM` along the polyline (clamped), linear between vertices. */
+export function pointAtDistance(pts: readonly LatLon[], cum: readonly number[], distM: number): LatLon {
+  if (pts.length === 0) throw new Error('empty polyline');
+  const total = cum[cum.length - 1]!;
+  const d = Math.max(0, Math.min(total, distM));
+  let i = 1;
+  while (i < cum.length - 1 && cum[i]! < d) i++;
+  if (pts.length === 1) return pts[0]!;
+  const span = cum[i]! - cum[i - 1]!;
+  const t = span === 0 ? 0 : (d - cum[i - 1]!) / span;
+  const a = pts[i - 1]!;
+  const b = pts[i]!;
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+/** Local metric projection: x metres east, y metres SOUTH (screen-down) of `origin`. */
+export function makeProjector(origin: LatLon): (p: LatLon) => readonly [number, number] {
+  const mPerLat = (Math.PI / 180) * R_EARTH_M;
+  const mPerLon = mPerLat * Math.cos(rad(origin[0]));
+  return (p) => [(p[1] - origin[1]) * mPerLon, -(p[0] - origin[0]) * mPerLat];
+}
+
+export interface View { scale: number; cx: number; cy: number }   // px per metre, centre in projected metres
+
+/** The view that fits every point into width x height with `pad` px around. */
+export function fitView(pointsXY: ReadonlyArray<readonly [number, number]>, width: number, height: number, pad: number): View {
+  if (pointsXY.length === 0) return { scale: 1, cx: 0, cy: 0 };
+  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+  for (const [x, y] of pointsXY) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
   }
+  const w = Math.max(maxX - minX, 1);
+  const h = Math.max(maxY - minY, 1);
+  const scale = Math.min((width - 2 * pad) / w, (height - 2 * pad) / h);
+  return { scale, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+}
+
+/** A "nice" scale-bar length in metres for a given px-per-metre scale, at most `maxPx` wide. */
+export function niceScaleBarM(scale: number, maxPx: number): number {
+  const steps = [10, 20, 50, 100, 200, 250, 500, 1000, 2000];
+  let best = steps[0]!;
+  for (const s of steps) if (s * scale <= maxPx) best = s;
   return best;
 }

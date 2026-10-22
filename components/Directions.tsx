@@ -9,6 +9,7 @@ import { mapsLink, type WaypointPlan } from "@/lib/maps";
 import { minutesFor, type PoolRoute } from "@/lib/score";
 import type { Pace } from "@/lib/types";
 import { Caution } from "./icons";
+import { setActiveStep, useActiveStep } from "@/lib/activeStep";
 import type { SheetApi } from "./Sheet";
 
 /** Copies text; falls back to a hidden textarea where the async clipboard is unavailable. */
@@ -49,7 +50,7 @@ export function Directions({
 }) {
   const steps = useMemo(() => buildDirections(route.path), [route.path]);
   const summary = `${fmtMiles(route.stats.miles)} · ${fmtTime(minutesFor(route.stats, pace))}`;
-  const [here, setHere] = useState<number | null>(null);
+  const here = useActiveStep();
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const list = useRef<HTMLOListElement>(null);
   const timer = useRef(0);
@@ -67,18 +68,21 @@ export function Directions({
   }, []);
 
   const mark = (i: number) => {
-    const next = here === i ? null : i;
-    setHere(next);
-    if (next === null) return;
-    // Bring this step to the top so the next couple are in view too.
-    requestAnimationFrame(() => {
+    setActiveStep(here === i ? null : i);
+  };
+
+  // Bring the marked step to the top so the next couple are in view too, whichever side marked it.
+  useEffect(() => {
+    if (here === null) return;
+    const r = requestAnimationFrame(() => {
       const box = list.current?.parentElement;
-      const row = list.current?.children[next] as HTMLElement | undefined;
+      const row = list.current?.children[here] as HTMLElement | undefined;
       if (!box || !row) return;
       const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       box.scrollTo({ top: Math.max(0, row.offsetTop - 8), behavior: smooth ? "smooth" : "auto" });
     });
-  };
+    return () => cancelAnimationFrame(r);
+  }, [here]);
 
   const copy = async () => {
     const ok = await copyText(stepsToText(route.name, summary, steps));

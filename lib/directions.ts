@@ -1,7 +1,7 @@
 import { COPY, FT_PER_METER, METERS_PER_MILE } from './config';
 import { CROSSING_DETAIL, CROSSING_RIGHT_CELL, CROSSING_TITLE, crossingFromTo, turnBackText } from './crossingCopy';
 import { longStreet, placeNoun, primaryStreet } from './describe';
-import { bearing, turnDelta } from './geo';
+import { bearing, turnDelta } from './bearing';
 import { isOneWay, nodes, traverse, type Traversal } from './graph';
 import { forbiddenRoadOf } from './rules';
 import type { NodeId } from './types';
@@ -23,6 +23,8 @@ export interface DirStep {
   cumMeters: number;
   cue: string | null;
   notes: DirNote[];
+  /** Index in the walk's node path where this step begins (for the map's numbered markers). */
+  at: number;
   /** Muted line under the title (the crossing step: where you come from and go to). */
   sub?: string;
   /** Right-hand cell instead of a distance (the crossing step: "+1 min"). */
@@ -88,7 +90,8 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
   // Merge consecutive legs on the same street, but never across a turnaround.
   const groups: Traversal[][] = [];
   const turnAfter = new Set<number>(); // group index that a turnaround precedes
-  for (const leg of legs) {
+  const groupAt: number[] = []; // path index where each group starts
+  legs.forEach((leg, k) => {
     const group = groups[groups.length - 1];
     const prev = group?.[group.length - 1];
     // A signal crossing is its own step, never merged with the street before or after it.
@@ -99,8 +102,9 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
     else {
       if (reversal) turnAfter.add(groups.length);
       groups.push([leg]);
+      groupAt.push(k);
     }
-  }
+  });
 
   const steps: DirStep[] = [];
   let cum = 0;
@@ -109,7 +113,7 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
     const meters = g.reduce((m, t) => m + t.seg.meters, 0);
 
     if (turnAfter.has(i)) {
-      steps.push({ kind: 'turnaround', turn: '', street: turnaroundText(groups[i - 1], first.from), meters: 0, cumMeters: cum, cue: null, notes: [] });
+      steps.push({ kind: 'turnaround', turn: '', street: turnaroundText(groups[i - 1], first.from), meters: 0, cumMeters: cum, cue: null, notes: [], at: groupAt[i] });
     }
 
     if (first.seg.kind === 'crossing') {
@@ -129,6 +133,7 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
         cumMeters: cum,
         cue: null,
         notes: [{ text: CROSSING_DETAIL, caution: true }],
+        at: groupAt[i],
       });
       return;
     }
@@ -158,6 +163,7 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
       cumMeters: cum,
       cue: hillCue(g),
       notes,
+      at: groupAt[i],
     });
   });
 
@@ -170,6 +176,7 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
     cumMeters: cum,
     cue: null,
     notes: [],
+    at: path.length - 1,
   });
   return steps;
 }

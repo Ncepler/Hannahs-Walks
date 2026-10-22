@@ -1,6 +1,7 @@
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { FT_PER_METER, HOME_ID, MAX_MILES, METERS_PER_MILE, MIN_MILES } from './config';
+import { ascentDescent, elevationSamples } from './elevation';
 import { checkPath, isLegalSegment } from './rules';
 import type { NodeId, RouteStats, Segment, SegmentId, WalkNode } from './types';
 
@@ -192,6 +193,10 @@ export function computeStats(path: readonly NodeId[]): RouteStats {
     if (!ridge && RIDGE_NODES.includes(id)) ridge = id;
   }
   if (ridge) pois.push(ridge);
+
+  // Generated mode: ascent and descent come from the stored samples. Seed mode keeps node-to-node (a lower bound).
+  const samples = elevationSamples(path, segmentBetween);
+  if (samples) ({ ascentFt: ascent, descentFt: descent } = ascentDescent(samples.y));
 
   const miles = meters / METERS_PER_MILE;
   return {

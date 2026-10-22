@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { COPY } from "@/lib/config";
+import { COPY, DEFAULT_BASEMAP, MAP_COPY } from "@/lib/config";
 import { MAPS_MAX_WAYPOINTS_MOBILE, mapsMaxWaypoints } from "@/lib/mapsLimits";
 import { fmtClimb, fmtMiles, fmtTime, hasBusyRoad, pausePoints, whyThisOne } from "@/lib/describe";
 import { embedUrl, mapsLink, selectWaypoints } from "@/lib/maps";
@@ -12,7 +12,9 @@ import { vars } from "./css";
 import { ElevationProfile } from "./ElevationProfile";
 import { Caution, MoodIcon } from "./icons";
 import { MapEmbed } from "./MapEmbed";
-import { RouteSketch } from "./RouteSketch";
+import { RouteMap } from "./RouteMap";
+import { Sheet } from "./Sheet";
+import { webglAvailable } from "./BasemapLayer";
 import { useStaged } from "./useStaged";
 
 interface Props {
@@ -42,6 +44,26 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
   }, []);
 
   const pauses = pausePoints(route);
+  const [scrubM, setScrubM] = useState<number | null>(null);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [basemap, setBasemap] = useState(DEFAULT_BASEMAP);
+  const [canBasemap, setCanBasemap] = useState(false);
+  useEffect(() => {
+    setCanBasemap(webglAvailable());
+    try {
+      if (localStorage.getItem("sw_basemap") === "1") setBasemap(true);
+    } catch {
+      /* storage can be blocked */
+    }
+  }, []);
+  const chooseBasemap = (on: boolean) => {
+    setBasemap(on);
+    try {
+      localStorage.setItem("sw_basemap", on ? "1" : "0");
+    } catch {
+      /* storage can be blocked */
+    }
+  };
   const [limit, setLimit] = useState(MAPS_MAX_WAYPOINTS_MOBILE);
   useEffect(() => setLimit(mapsMaxWaypoints(navigator.userAgent, navigator.maxTouchPoints)), []);
   const plan = useMemo(() => selectWaypoints(route.path, limit), [route.path, limit]);
@@ -97,7 +119,7 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
         )}
 
         <div className="rc" style={stagger(4)}>
-          <ElevationProfile path={route.path} mood={mood} />
+          <ElevationProfile path={route.path} mood={mood} scrubM={scrubM} onScrub={setScrubM} />
         </div>
 
         <div className="rc details" style={stagger(5)}>
@@ -156,11 +178,40 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
         </p>
       </article>
 
+      <aside className="card map-card" aria-label="Route map">
+        <RouteMap path={route.path} mood={mood} mode="preview" onExpand={() => setMapOpen(true)} scrubM={scrubM} />
+      </aside>
+
       {embed && <MapEmbed src={embed} />}
 
-      <aside className="card sketch-card" aria-label="Route sketch">
-        <RouteSketch path={route.path} mood={mood} />
-      </aside>
+      {mapOpen && (
+        <Sheet labelledBy="map-title" onClose={() => setMapOpen(false)}>
+          {(api) => (
+            <>
+              <div className="dir-head" data-drag>
+                <div className="dir-head-row">
+                  <h2 id="map-title" className="dir-title">
+                    {route.name}
+                  </h2>
+                  <button type="button" className="icon-btn pressable" data-nodrag onClick={api.close} aria-label="Close map">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6 6 18" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div className="map-full">
+                <RouteMap path={route.path} mood={mood} mode="full" scrubM={scrubM} basemap={basemap && canBasemap} onBasemapFail={() => { setCanBasemap(false); }} />
+              </div>
+              {canBasemap && (
+                <div className="map-toggle" data-nodrag>
+                  <CheckRow checked={basemap} onChange={chooseBasemap} label={MAP_COPY.basemapToggle} sub={MAP_COPY.basemapHelp} />
+                </div>
+              )}
+            </>
+          )}
+        </Sheet>
+      )}
     </div>
   );
 }
