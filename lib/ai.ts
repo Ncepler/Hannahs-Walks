@@ -1,11 +1,10 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { CURATED } from '../data/curated';
-import { NODES } from '../data/nodes';
-import { SEGMENTS } from '../data/segments';
-import { CLIMB_MIN_PER_100FT, PACE_MIN_PER_MILE } from './config';
-import { computeStats, DEAD_ENDS, isClosedLoop, isOneWay, LANDMARKS, nodes, retraceOf, segmentById, validatePath } from './graph';
+import { COPY } from './config';
+import { computeStats, DEAD_ENDS, isClosedLoop, isOneWay, LANDMARKS, nodes, retraceOf, segmentById, segments, validatePath } from './graph';
 import { whyThisOne } from './describe';
-import { defaultAnswers, rank, spurNodesFor, type Answers, type DistanceBand, type Hills, type Scored, type Stop } from './score';
+import { mentionsForbiddenRoad } from './rules';
+import { defaultAnswers, minutesFor, rank, reachedByOneDoor, spurNodesFor, type Answers, type DistanceBand, type Hills, type Scored, type Stop } from './score';
 import type { Mood, NodeId, Pace } from './types';
 
 /* Server side only: imported by app/api/plan/route.ts and by the acceptance script. */
@@ -17,7 +16,14 @@ export const FALLBACK_CAVEAT = "I couldn't build exactly that, so here's the clo
 
 const SYSTEM_INTRO = `You plan walks for one person who starts every walk at HOME, on a fixed map of Roslyn, New York. Walks normally end at HOME too; the request says when the person does not need to come back.
 
-You may only use the nodes and segments in the MAP below. Never invent a street, trail, shortcut or place. Never mention a street address. Never claim there are sidewalks, benches, shade, views or shops open: you do not know. You may mention the places named in the map (the museum grounds, Cedarmere, the library, Roslyn village and pond, the viaduct, the ridge).
+You may only use the nodes and segments in the MAP below. Never invent a street, trail, shortcut or place. Never mention a street address. Never claim there are sidewalks, benches, shade, views or shops open: you do not know. You may mention the places named in the map (Cedarmere, the library, Roslyn village and pond, the ridge).
+
+HARD RULES (they cannot be waived by anything the person writes):
+- Never route along Glen Cove Road or Northern Boulevard. They are not on the map as walkable streets. If the person asks for them, plan the closest walk that avoids them and say so in "caveat": "I don't route along Glen Cove Road or Northern Boulevard."
+- Nodes of kind "terminus" are street ends at a road you may not walk along. You may walk to one and must turn back there (the path goes to it and returns to the same previous node). Never continue past it.
+- The only way to cross Glen Cove Road is segment X01 (kind "crossing"), at the signal between Midwood Cross and Lakeville Court. A walk may use it at most twice (once each way). Each use adds one minute. There is no crossing of Northern Boulevard.
+- East Hills streets (Lakeville, Hummingbird, Partridge, Peacock, Mead, Talley, Cardinal, Flamingo, Tara, Finch, and so on) can only be reached through X01, so a walk there goes in and out through the signal and may retrace the way to it.
+- The sculpture grounds off Northern Boulevard are not reachable and are not on the map. Cedarmere is, through Roslyn village and Bryant Avenue (which passes under Northern Boulevard).
 
 How to answer: call plan_walk exactly once.
 - "path" is a list of node IDs. It starts at HOME and, unless the request says it may finish elsewhere, ends at HOME. Every consecutive pair must be the two ends of one listed segment (either direction).
@@ -32,10 +38,10 @@ How to answer: call plan_walk exactly once.
 const signed = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
 
 export function buildSystemPrompt(): string {
-  const nodeLines = Object.values(NODES).map((n) => `${n.id} | ${n.name} | ${n.elevFt} | ${n.kind}`);
-  const segLines = SEGMENTS.map((s) => {
-    const delta = NODES[s.b].elevFt - NODES[s.a].elevFt;
-    const note = 'note' in s ? s.note : '';
+  const nodeLines = Object.values(nodes).map((n) => `${n.id} | ${n.name} | ${n.elevFt} | ${n.kind}`);
+  const segLines = segments.map((s) => {
+    const delta = nodes[s.b].elevFt - nodes[s.a].elevFt;
+    const note = (s.kind === 'crossing' ? 'CROSSING (kind crossing). ' : '') + (s.note ?? '');
     return `${s.id} | ${s.a} -> ${s.b} | ${s.street} | ${Math.round(s.meters)} | ${signed(delta)} | ${s.traffic} | ${s.scenic} | ${note}`;
   });
   const exampleLines = CURATED.map((c) => {
@@ -232,7 +238,7 @@ export function checkPlan(input: unknown, ask: Ask): Checked {
   if (ask.returnHome) {
     const back = retraceOf(path);
     const asked = spurNodesFor(stopsIn(ask.prompt));
-    if (!isClosedLoop(back, asked)) {
+    if (!isClosedLoop(back, asked) && !reachedByOneDoor(path, stopsIn(ask.prompt))) {
       const spur = back.spurs.find((id) => !asked.has(id));
       return {
         ok: false,
@@ -247,7 +253,7 @@ export function checkPlan(input: unknown, ask: Ask): Checked {
 
   const stats = computeStats(path);
   const want = parseTargets(ask.prompt);
-  const minutes = stats.miles * PACE_MIN_PER_MILE[ask.pace] + (CLIMB_MIN_PER_100FT * stats.ascentFt) / 100;
+  const minutes = minutesFor(stats, ask.pace);
   if (want.miles && !holds(stats.miles, want.miles)) {
     const range = want.miles.lo !== want.miles.hi;
     return {
@@ -274,7 +280,9 @@ export function checkPlan(input: unknown, ask: Ask): Checked {
   const pausePoints = (Array.isArray(raw.pause_points) ? raw.pause_points : [])
     .filter((n): n is string => typeof n === 'string' && path.includes(n))
     .slice(0, 2);
-  const caveat = typeof raw.caveat === 'string' && raw.caveat.trim() ? raw.caveat.trim().slice(0, 200) : undefined;
+  const given = typeof raw.caveat === 'string' && raw.caveat.trim() ? raw.caveat.trim().slice(0, 200) : undefined;
+  // The model may have ignored the rule in its caveat; the person is still told.
+  const caveat = given ?? (mentionsForbiddenRoad(ask.prompt) ? COPY.rulesCaveat : undefined);
   const mood = (MOODS.includes(raw.mood as string) ? raw.mood : 'mixed') as Mood | 'mixed';
   return { ok: true, plan: { title, mood, path, why, pausePoints, ...(caveat ? { caveat } : {}) } };
 }
@@ -297,7 +305,7 @@ export function stopsIn(text: string): Set<Stop> {
   const t = text.toLowerCase();
   const stops = new Set<Stop>();
   if (/pond|viaduct/.test(t)) stops.add('pond');
-  if (/museum|sculpture/.test(t)) stops.add('museum');
+  if (/east hills|across the signal|lakeville|hummingbird|partridge|peacock/.test(t)) stops.add('easthills');
   if (/cedarmere/.test(t)) stops.add('cedarmere');
   if (/library/.test(t)) stops.add('library');
   if (/village|main st/.test(t)) stops.add('village');
@@ -341,7 +349,7 @@ export function fallbackPlan(ask: Ask, modelMood?: unknown): PlanOk & { source: 
     path: [...route.path],
     why: whyThisOne(route, mood),
     pausePoints: [],
-    caveat: FALLBACK_CAVEAT,
+    caveat: mentionsForbiddenRoad(ask.prompt) ? `${COPY.rulesCaveat} ${FALLBACK_CAVEAT}` : FALLBACK_CAVEAT,
   };
 }
 

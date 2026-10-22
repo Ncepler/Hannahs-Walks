@@ -1,107 +1,53 @@
-import { HOME_ID, MAPS_MAX_WAYPOINTS } from './config';
-import { distToPolyline } from './geo';
-import { adj, LANDMARKS, nodes, segmentBetween } from './graph';
+import { BARRIER_LINKS } from '../data/barrier-links';
+import { HOME_ID } from './config';
+import { adj, nodes, segmentBetween } from './graph';
+import { buildMapsUrl } from './mapsUrl';
+import type { LatLon } from './polyline';
 import type { NodeId } from './types';
+import { chooseWaypoints, shortestPath, type SimEdge } from './waypoints';
 
-/* ---------- Dijkstra on our own graph, standing in for "Google picks its own shortest path" ---------- */
+/* ---------- Standing in for "Google picks its own shortest path" (ROADS-ADDENDUM §8.4) ---------- */
 
-const ids = Object.keys(nodes).sort();
-
-/** Shortest path by metres. Ties go to the lower node id so the result is repeatable. */
-export function shortestPath(from: NodeId, to: NodeId): NodeId[] {
-  const dist = new Map<NodeId, number>(ids.map((n) => [n, Infinity]));
-  const prev = new Map<NodeId, NodeId>();
-  const done = new Set<NodeId>();
-  dist.set(from, 0);
-  for (;;) {
-    let u: NodeId | undefined;
-    for (const n of ids) if (!done.has(n) && dist.get(n)! < Infinity && (u === undefined || dist.get(n)! < dist.get(u)!)) u = n;
-    if (u === undefined || u === to) break;
-    done.add(u);
-    for (const [nb, , m] of adj[u]) {
-      const d = dist.get(u)! + m;
-      if (d < dist.get(nb)! - 1e-9) {
-        dist.set(nb, d);
-        prev.set(nb, u);
-      }
-    }
-  }
-  const out: NodeId[] = [to];
-  while (out[0] !== from) {
-    const p = prev.get(out[0]);
-    if (!p) return [from];
-    out.unshift(p);
-  }
-  return out;
+/**
+ * Legal segments plus the roads we refuse (BARRIER_LINKS), both directions: Google may use either.
+ * Only this file and the planner above it may touch BARRIER_LINKS.
+ */
+const sim = new Map<NodeId, SimEdge[]>();
+for (const id of Object.keys(nodes)) sim.set(id, (adj[id] ?? []).map(([to, edgeId, meters]) => ({ id: edgeId, to, meters })));
+for (const b of BARRIER_LINKS) {
+  sim.get(b.a)?.push({ id: b.id, to: b.b, meters: b.meters });
+  sim.get(b.b)?.push({ id: b.id, to: b.a, meters: b.meters });
 }
+const simGraph = (n: string): readonly SimEdge[] => sim.get(n) ?? [];
+const isBarrierEdge = (edgeId: string) => BARRIER_LINKS.some((b) => b.id === edgeId);
 
 /** The path our stand-in for Google would walk through these points, in order. */
 export function simulate(points: readonly NodeId[]): NodeId[] {
   const out: NodeId[] = [points[0]];
-  for (let i = 0; i < points.length - 1; i++) out.push(...shortestPath(points[i], points[i + 1]).slice(1));
+  for (let i = 0; i < points.length - 1; i++) out.push(...(shortestPath(simGraph, points[i], points[i + 1])?.nodes.slice(1) ?? []));
   return out;
 }
-
-const same = (a: readonly NodeId[], b: readonly NodeId[]) => a.length === b.length && a.every((n, i) => n === b[i]);
 
 export interface WaypointPlan {
   /** Intermediate nodes to hand to Google, in route order. */
   waypoints: NodeId[];
-  /** True when the simulated shortest path through them is exactly the intended path. */
+  /** True when every leg's simulated shortest path is exactly the intended one. */
   exact: boolean;
+  /** The limit was reached and Google's likely path still runs along a road we refuse. */
+  risky: boolean;
 }
 
-/**
- * §12.2: add the node farthest from the simulated path until it matches the intended path or the
- * limit is reached. Start is the first node, finish the last (Home for a loop).
- */
-export function selectWaypoints(path: readonly NodeId[], max = MAPS_MAX_WAYPOINTS): WaypointPlan {
-  const start = path[0];
-  const end = path[path.length - 1];
-  const order = (n: NodeId) => path.indexOf(n);
-  const through = (w: NodeId[]) => simulate([start, ...w, end]);
-  const W: NodeId[] = [];
-  let sim = through(W);
-  const candidates = [...new Set(path)].filter((n) => n !== start && n !== end);
+const coordOf = (id: string): LatLon => [nodes[id].lat, nodes[id].lon];
 
-  while (!same(sim, path) && W.length < max) {
-    const open = candidates.filter((n) => !W.includes(n));
-    if (!open.length) break;
-    let best = open[0];
-    let far = -1;
-    for (const n of open) {
-      const d = distToPolyline(n, sim);
-      if (d > far + 1e-9) {
-        far = d;
-        best = n;
-      }
-    }
-    // Every node already lies on the simulated path (same streets, other order or direction):
-    // fall back to the node halfway along the walk.
-    if (far < 1) {
-      let acc = 0;
-      const cum = new Map<NodeId, number>();
-      path.forEach((n, i) => {
-        if (i > 0) acc += segmentBetween(path[i - 1], n)?.meters ?? 0;
-        if (!cum.has(n)) cum.set(n, acc);
-      });
-      best = open.reduce((a, b) => (Math.abs(cum.get(b)! - acc / 2) < Math.abs(cum.get(a)! - acc / 2) ? b : a));
-    }
-    W.push(best);
-    W.sort((a, b) => order(a) - order(b));
-    sim = through(W);
-  }
-
-  // "Always include the places the route visits, if the limit allows" (§12.2.5), keeping the match.
-  const exact = same(sim, path);
-  for (const poi of path.filter((n, i) => LANDMARKS.includes(n) && path.indexOf(n) === i && n !== end)) {
-    if (W.length >= max) break;
-    if (W.includes(poi)) continue;
-    const trial = [...W, poi].sort((a, b) => order(a) - order(b));
-    if (exact && !same(through(trial), path)) continue;
-    W.splice(0, W.length, ...trial);
-  }
-  return { waypoints: W, exact };
+/** Leg-by-leg pins, at most `limit` (3 on mobile browsers, 9 elsewhere: lib/mapsLimits.ts). */
+export function selectWaypoints(path: readonly NodeId[], limit: number): WaypointPlan {
+  const edges = path.slice(0, -1).map((n, i) => segmentBetween(n, path[i + 1])?.id ?? '');
+  const plan = chooseWaypoints(path, edges, simGraph, coordOf, isBarrierEdge, limit);
+  return {
+    waypoints: plan.indices.map((i) => path[i]),
+    exact: plan.exact,
+    risky: !plan.exact && plan.usesBarrier,
+  };
 }
 
 /* ---------- Links ---------- */
@@ -117,12 +63,7 @@ function query(params: [string, string][]): string {
 
 /** Deep link for Google Maps. Without `origin`, Google starts from wherever the person is standing. */
 export function mapsLink(path: readonly NodeId[], waypoints: readonly NodeId[], opts: { startFromHome?: boolean } = {}): string {
-  const params: [string, string][] = [['api', '1']];
-  if (opts.startFromHome) params.push(['origin', ll(HOME_ID)]);
-  params.push(['destination', ll(path[path.length - 1])]);
-  if (waypoints.length) params.push(['waypoints', waypoints.map(ll).join('|')]);
-  params.push(['travelmode', 'walking']);
-  return `https://www.google.com/maps/dir/?${query(params)}`;
+  return buildMapsUrl(coordOf(path[path.length - 1]), waypoints.map(coordOf), opts.startFromHome ? coordOf(HOME_ID) : undefined);
 }
 
 /** The Embed key is public by design; restrict it by HTTP referrer in Google Cloud. */

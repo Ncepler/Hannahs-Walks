@@ -68,6 +68,8 @@ interface Opt<T extends string> {
   label: string;
   /** The same thing in full words: used in the summary and read after the label by screen readers. */
   say?: string;
+  /** One line shown under the chips while this option is picked. */
+  help?: string;
 }
 
 /** Hidden text that follows the visible label, so the accessible name still begins with what is on screen. */
@@ -100,7 +102,7 @@ const HILL_OPTS: Opt<Hills>[] = [
 const STOP_OPTS: Opt<Stop>[] = [
   { value: "village", label: "Roslyn village" },
   { value: "pond", label: "The pond" },
-  { value: "museum", label: "Museum grounds" },
+  { value: "easthills", label: "East Hills (across the signal)", help: "One crossing each way, with a signal." },
   { value: "cedarmere", label: "Cedarmere" },
   { value: "library", label: "The library" },
   { value: "ridge", label: "The ridge" },
@@ -307,6 +309,11 @@ export function Wizard({ step, form, onForm, onStep, onPlan, onSurprise }: Props
                 Nothing in particular
               </button>
             </div>
+            {STOP_OPTS.filter((o) => o.help && form.stops.includes(o.value)).map((o) => (
+              <p key={o.value} className="muted">
+                {o.help}
+              </p>
+            ))}
             <button
               type="button"
               role="switch"

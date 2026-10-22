@@ -1,5 +1,6 @@
 import { CURATED } from '../data/curated';
 import { CLIMB_MIN_PER_100FT, PACE_MIN_PER_MILE } from './config';
+import { CROSSING_WAIT_SECONDS } from './rules';
 import { composeAll, composeOneWay } from './compose';
 import { computeStats, DEAD_ENDS, isClosedLoop, isOneWay, retraceOf, traverse, type Retrace } from './graph';
 import type { Mood, NodeId, Pace, Route, RouteStats, SegmentId, WalkKind } from './types';
@@ -28,10 +29,10 @@ export function moodScores(s: RouteStats): Record<Mood, number> {
   return { clear, workout, ponder };
 }
 
-/* ---------- Time (§9.3) ---------- */
+/* ---------- Time (§9.3, plus the signal wait from the roads addendum) ---------- */
 
 export const minutesFor = (s: RouteStats, pace: Pace) =>
-  s.miles * PACE_MIN_PER_MILE[pace] + (CLIMB_MIN_PER_100FT * s.ascentFt) / 100;
+  s.miles * PACE_MIN_PER_MILE[pace] + (CLIMB_MIN_PER_100FT * s.ascentFt) / 100 + (s.crossings * CROSSING_WAIT_SECONDS) / 60;
 
 /** Display minutes rounded to the nearest 5. */
 export const roundMinutes = (m: number) => Math.max(5, Math.round(m / 5) * 5);
@@ -43,13 +44,11 @@ const shortStreet = (name: string) => name.replace(/\s+(Dr|Rd|Ln)$/, '');
 
 const POI_SHORT: Record<string, string> = {
   CEDARMERE: 'Cedarmere',
-  NCMA: 'Museum grounds',
-  VIADUCT: 'The viaduct',
   VILLAGE: 'Roslyn village',
   LIBRARY: 'Bryant Library',
 };
 /** The landmark that names a route when several are visited. */
-const POI_PRIORITY = ['CEDARMERE', 'NCMA', 'VIADUCT', 'VILLAGE', 'LIBRARY'];
+const POI_PRIORITY = ['CEDARMERE', 'VILLAGE', 'LIBRARY'];
 
 const KIND_LABEL: Record<WalkKind, string> = {
   loop: 'Loop',
@@ -59,14 +58,14 @@ const KIND_LABEL: Record<WalkKind, string> = {
   custom: 'Walk',
 };
 
-function topStreets(path: readonly NodeId[], skip?: string): string[] {
+function topStreets(path: readonly NodeId[]): string[] {
   const meters = new Map<string, number>();
   for (const t of traverse(path)) {
+    if (t.seg.kind === 'crossing') continue;
     const name = shortStreet(primaryStreet(t.seg.street));
     meters.set(name, (meters.get(name) ?? 0) + t.seg.meters);
   }
   return [...meters.entries()]
-    .filter(([name]) => name !== skip)
     .sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
     .slice(0, 3)
     .map(([name]) => name);
@@ -75,11 +74,10 @@ function topStreets(path: readonly NodeId[], skip?: string): string[] {
 export function nameFor(path: readonly NodeId[], kind: WalkKind, stats: RouteStats): string {
   if (kind === 'one-way') {
     const end = path[path.length - 1];
-    return `${POI_SHORT[end]} via ${topStreets(path, end === 'NCMA' ? 'Museum' : undefined)[0]}, one way`;
+    return `${POI_SHORT[end]} via ${topStreets(path)[0]}, one way`;
   }
   const poi = POI_PRIORITY.find((id) => stats.pois.includes(id));
-  // "Museum grounds via Museum" says nothing, so the museum's own access road is skipped.
-  if (poi) return `${POI_SHORT[poi]} via ${topStreets(path, poi === 'NCMA' ? 'Museum' : undefined)[0]}`;
+  if (poi) return `${POI_SHORT[poi]} via ${topStreets(path)[0]}`;
   const streets = topStreets(path);
   const list = streets.length > 1 ? `${streets.slice(0, -1).join(', ')} & ${streets[streets.length - 1]}` : streets[0];
   return `${list} ${KIND_LABEL[kind]}`;
@@ -88,8 +86,6 @@ export function nameFor(path: readonly NodeId[], kind: WalkKind, stats: RouteSta
 const BLURB_POI: Record<string, string> = {
   LIBRARY: 'past the library',
   VILLAGE: 'through Roslyn village',
-  VIADUCT: 'to the viaduct',
-  NCMA: 'out to the museum grounds',
   CEDARMERE: 'down to Cedarmere',
   POPLAR_ASH: 'over the ridge',
   POPLAR_W: 'over the ridge',
@@ -98,8 +94,6 @@ const BLURB_POI: Record<string, string> = {
 const END_PHRASE: Record<string, string> = {
   LIBRARY: 'the library',
   VILLAGE: 'Roslyn village',
-  VIADUCT: 'the viaduct',
-  NCMA: 'the museum grounds',
   CEDARMERE: 'Cedarmere',
 };
 
@@ -115,9 +109,9 @@ export function blurbFor(s: RouteStats, finish?: NodeId): string {
 }
 
 function tagsFor(s: RouteStats, kind: WalkKind): string {
-  const area = s.pois.some((id) => ['VILLAGE', 'LIBRARY', 'VIADUCT'].includes(id))
+  const area = s.pois.some((id) => ['VILLAGE', 'LIBRARY'].includes(id))
     ? 'village'
-    : s.pois.some((id) => ['NCMA', 'CEDARMERE'].includes(id))
+    : s.pois.some((id) => ['CEDARMERE'].includes(id))
       ? 'destination'
       : s.pois.length
         ? 'ridge'
@@ -243,7 +237,7 @@ export function routeFromPath(
 
 export type Hills = 'flat' | 'rolling' | 'hilly' | 'any';
 export type DistanceBand = '<1' | '1-2' | '2-3' | '3-5' | '5+';
-export type Stop = 'village' | 'museum' | 'cedarmere' | 'library' | 'ridge' | 'pond';
+export type Stop = 'village' | 'easthills' | 'cedarmere' | 'library' | 'ridge' | 'pond';
 
 export interface TimeChoice {
   min: number;
@@ -279,18 +273,28 @@ export function defaultAnswers(mood: Mood): Answers {
 
 const STOP_NODES: Record<Stop, readonly NodeId[]> = {
   village: ['VILLAGE'],
-  museum: ['NCMA'],
+  easthills: ['GCX_E'],
   cedarmere: ['CEDARMERE'],
   library: ['LIBRARY'],
   ridge: ['POPLAR_ASH'],
-  pond: ['VILLAGE', 'VIADUCT'],
+  pond: ['VILLAGE'],
 };
 /** The dead-end places among the chosen stops: a walk to one has to be walked in and out. */
 export const spurNodesFor = (stops: Iterable<Stop>): Set<NodeId> =>
   new Set([...stops].flatMap((s) => STOP_NODES[s]).filter((id) => DEAD_ENDS.includes(id)));
+/**
+ * Places with one way in: East Hills only through the signal (X01); Cedarmere, the village and the library only along
+ * Roslyn Road and the village stems (no road leads on from them without a forbidden one).
+ * A walk to one goes in and out the same way, so a picked one is exempt from the closed-loop test.
+ */
+const ONE_DOOR: Partial<Record<Stop, NodeId>> = { easthills: 'GCX_E', cedarmere: 'CEDARMERE', village: 'VILLAGE', pond: 'VILLAGE', library: 'LIBRARY' };
+export const reachedByOneDoor = (visited: ReadonlySet<NodeId> | readonly NodeId[], stops: Iterable<Stop>): boolean => {
+  const has = (id: NodeId) => (visited instanceof Set ? visited.has(id) : (visited as readonly NodeId[]).includes(id));
+  return [...stops].some((st) => ONE_DOOR[st] !== undefined && has(ONE_DOOR[st]!));
+};
 const STOP_LABEL: Record<Stop, string> = {
   village: 'Roslyn village',
-  museum: 'the museum grounds',
+  easthills: 'East Hills',
   cedarmere: 'Cedarmere',
   library: 'the library',
   ridge: 'the ridge',
@@ -328,7 +332,13 @@ interface Filter {
 function buildFilters(a: Answers): Filter[] {
   // Listed top to bottom; relaxation drops from the bottom up.
   return [
-    { key: 'avoidBusy', active: a.avoidBusy, label: 'no busy roads', test: (r) => r.stats.busyShare <= 0.1 },
+    {
+      key: 'avoidBusy',
+      active: a.avoidBusy,
+      label: 'no busy roads',
+      // A signal crossing is a busy road to wait at, so it is out unless East Hills was asked for.
+      test: (r) => r.stats.busyShare <= 0.1 && (r.stats.crossings === 0 || a.stops.has('easthills')),
+    },
     {
       key: 'stops',
       active: a.stops.size > 0,
@@ -376,10 +386,10 @@ export interface Candidates {
 
 export function rank(a: Answers): Candidates {
   const { routes, oneWay } = getPool();
-  // Ending back at Home means a loop: the way back is never the way out. The one allowance is the
-  // dead-end road to a museum or Cedarmere the person picked, which can only be walked in and out.
+  // Ending back at Home means a loop: the way back is never the way out. The one allowance is a place the
+  // person picked that has only one way in (East Hills, Cedarmere), which can only be walked in and out.
   const spurs = spurNodesFor(a.stops);
-  const open = a.returnHome ? routes.filter((r) => isClosedLoop(r.retrace, spurs)) : [...routes, ...oneWay];
+  const open = a.returnHome ? routes.filter((r) => isClosedLoop(r.retrace, spurs) || reachedByOneDoor(r.visited, a.stops)) : [...routes, ...oneWay];
   const all = open.map((route) => ({ route, minutes: minutesFor(route.stats, a.pace) }));
   const filters = buildFilters(a);
   const active = filters.filter((f) => f.active);

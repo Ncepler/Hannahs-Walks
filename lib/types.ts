@@ -1,6 +1,10 @@
+import type { ForbiddenRoad } from './rules';
+
 export type NodeId = string;
 export type SegmentId = string;
 export type Mood = 'clear' | 'workout' | 'ponder';
+export type NodeKind = 'home' | 'poi' | 'junction' | 'crossing' | 'terminus';
+export type SegmentSource = 'osm' | 'osrm' | 'derived' | 'assumed';
 
 export interface WalkNode {
   id: NodeId;
@@ -8,7 +12,7 @@ export interface WalkNode {
   lat: number;
   lon: number;
   elevFt: number;          // USGS 3DEP sample at the node
-  kind: 'home' | 'poi' | 'junction';
+  kind: NodeKind;
 }
 
 export interface Segment {
@@ -19,8 +23,22 @@ export interface Segment {
   meters: number;          // driving-network length, treat as ≈ walking length
   traffic: 1 | 2 | 3;      // 1 quiet residential, 2 moderate, 3 busy arterial
   scenic: 0 | 1 | 2 | 3;   // judgment, see §4.6 (not measured)
-  src: 'osrm' | 'derived'; // 'derived' = computed from two OSRM measurements
+  src: SegmentSource;      // 'derived' = computed from two OSRM measurements; 'assumed' = estimate (X01)
+  kind?: 'street' | 'crossing'; // default 'street'. 'crossing' = a signal crossing of a forbidden road
+  ref?: string;            // OSM ref, e.g. 'NY 25A'; used by forbiddenRoadOf
+  geom?: string;           // Google-encoded polyline (precision 5) of the centreline, a -> b
+  elevs?: number[];        // feet, sampled about every 40 m along geom, same order
   note?: string;           // optional one-liner shown in directions
+}
+
+export interface Crossing {
+  id: string;                     // 'X01'
+  segment: string;                // segment id
+  road: ForbiddenRoad;
+  signal: boolean;
+  waitSeconds: number;            // 60
+  verified: 'owner' | 'osm' | 'unverified';
+  note: string;
 }
 
 export interface CuratedRoute {
@@ -53,6 +71,7 @@ export interface RouteStats {
   turnsPerMile: number;
   pois: NodeId[];                          // visited POI nodes
   repeatShare: number;                     // share of length on edges walked 3+ times
+  crossings: number;                       // signal crossings walked (60 s wait each)
 }
 
 export type WalkKind = 'loop' | 'out-and-back' | 'lollipop' | 'one-way' | 'custom';

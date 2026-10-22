@@ -1,10 +1,12 @@
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
 import { FT_PER_METER, HOME_ID, MAX_MILES, METERS_PER_MILE, MIN_MILES } from './config';
+import { checkPath, isLegalSegment } from './rules';
 import type { NodeId, RouteStats, Segment, SegmentId, WalkNode } from './types';
 
 export const nodes: Readonly<Record<NodeId, WalkNode>> = NODES;
-export const segments: readonly Segment[] = SEGMENTS;
+/** Only segments the hard rules allow (lib/rules.ts). A forbidden edge never reaches the router. */
+export const segments: readonly Segment[] = SEGMENTS.filter(isLegalSegment);
 export const segmentById: Readonly<Record<SegmentId, Segment>> = Object.fromEntries(
   segments.map((s) => [s.id, s]),
 );
@@ -32,7 +34,9 @@ export const segmentBetween = (a: NodeId, b: NodeId): Segment | undefined => {
 };
 
 /** Landmarks that count as places worth walking to (§9.2). */
-export const LANDMARKS: readonly NodeId[] = ['NCMA', 'CEDARMERE', 'LIBRARY', 'VILLAGE', 'VIADUCT'];
+export const LANDMARKS: readonly NodeId[] = ['CEDARMERE', 'LIBRARY', 'VILLAGE'];
+/** Every node of kind 'poi' counts in `stats.pois` (the village, library, Cedarmere, the Paper Mill Rd / Main St corner). */
+const POI_NODES: readonly NodeId[] = Object.keys(nodes).filter((id) => nodes[id].kind === 'poi');
 export const RIDGE_NODES: readonly NodeId[] = ['POPLAR_ASH', 'POPLAR_W'];
 
 export interface Traversal {
@@ -110,7 +114,7 @@ export function retraceOf(path: readonly NodeId[]): Retrace {
 export const isClosedLoop = (r: Retrace, allowed: ReadonlySet<NodeId> = new Set()) =>
   r.repeated.length === 0 && r.spurs.every((id) => allowed.has(id));
 
-/** §5 validation rules 1 - 4. Rule 5 (reversal) is `reversalHolds`. A one-way walk may finish elsewhere. */
+/** §5 validation rules 1 - 4, then the hard rules (`checkPath`). Rule 5 (reversal) is `reversalHolds`. A one-way walk may finish elsewhere. */
 export function validatePath(path: readonly NodeId[], opts: { oneWay?: boolean } = {}): Validation {
   const errors: string[] = [];
   if (!Array.isArray(path) || path.length < 2) return { ok: false, errors: ['Walk is too short'] };
@@ -125,6 +129,9 @@ export function validatePath(path: readonly NodeId[], opts: { oneWay?: boolean }
         break;
       }
     }
+  }
+  if (!errors.length) {
+    errors.push(...checkPath(path, segmentBetween, nodes).reasons);
   }
   if (!errors.length) {
     const mi = milesOf(path);
@@ -155,6 +162,7 @@ export function computeStats(path: readonly NodeId[]): RouteStats {
   let quiet = 0;
   let busy = 0;
   let scenicWeighted = 0;
+  let crossings = 0;
   const walked = new Map<SegmentId, number>();
 
   for (const t of legs) {
@@ -166,6 +174,7 @@ export function computeStats(path: readonly NodeId[]): RouteStats {
     if (t.seg.traffic === 1) quiet += m;
     if (t.seg.traffic === 3) busy += m;
     scenicWeighted += t.seg.scenic * m;
+    if (t.seg.kind === 'crossing') crossings++;
     walked.set(t.seg.id, (walked.get(t.seg.id) ?? 0) + 1);
   }
 
@@ -176,7 +185,7 @@ export function computeStats(path: readonly NodeId[]): RouteStats {
   const pois: NodeId[] = [];
   let ridge: NodeId | undefined;
   for (const id of path) {
-    if (LANDMARKS.includes(id) && !seen.has(id)) {
+    if (POI_NODES.includes(id) && !seen.has(id)) {
       seen.add(id);
       pois.push(id);
     }
@@ -197,6 +206,7 @@ export function computeStats(path: readonly NodeId[]): RouteStats {
     turnsPerMile: countTurns(legs) / miles,
     pois,
     repeatShare: repeated / meters,
+    crossings,
   };
 }
 

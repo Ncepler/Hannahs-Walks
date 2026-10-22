@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { COPY } from "@/lib/config";
+import { MAPS_MAX_WAYPOINTS_MOBILE, mapsMaxWaypoints } from "@/lib/mapsLimits";
 import { fmtClimb, fmtMiles, fmtTime, hasBusyRoad, pausePoints, whyThisOne } from "@/lib/describe";
 import { embedUrl, mapsLink, selectWaypoints } from "@/lib/maps";
 import { minutesFor, type PoolRoute } from "@/lib/score";
@@ -41,9 +42,15 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
   }, []);
 
   const pauses = pausePoints(route);
-  const plan = useMemo(() => selectWaypoints(route.path), [route.path]);
+  const [limit, setLimit] = useState(MAPS_MAX_WAYPOINTS_MOBILE);
+  useEffect(() => setLimit(mapsMaxWaypoints(navigator.userAgent, navigator.maxTouchPoints)), []);
+  const plan = useMemo(() => selectWaypoints(route.path, limit), [route.path, limit]);
   const embed = embedUrl(route.path, plan.waypoints);
-  const openMaps = () => window.open(mapsLink(route.path, plan.waypoints, { startFromHome }), "_blank", "noopener,noreferrer");
+  const openMaps = () => {
+    // The limit is read when the button is pressed, not at render.
+    const now = selectWaypoints(route.path, mapsMaxWaypoints(navigator.userAgent, navigator.maxTouchPoints));
+    window.open(mapsLink(route.path, now.waypoints, { startFromHome }), "_blank", "noopener,noreferrer");
+  };
   const stagger = (i: number) => vars({ "--i": i });
 
   return (
@@ -82,6 +89,12 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
             <dd>{fmtClimb(route.stats.ascentFt)}</dd>
           </div>
         </dl>
+        {route.stats.crossings > 0 && (
+          <p className="note rc" style={stagger(3)}>
+            <Caution />
+            <span>{COPY.crossingChip}</span>
+          </p>
+        )}
 
         <div className="rc" style={stagger(4)}>
           <ElevationProfile path={route.path} mood={mood} />
@@ -124,7 +137,11 @@ export function RouteCard({ route: incoming, mood, pace, note, onAnother, onChan
           </button>
           <div className="actions-wide">
             <CheckRow checked={startFromHome} onChange={onStartFromHome} label="Start from Home" />
-            {!plan.exact && <p className="relaxed">{COPY.mapsMismatch}</p>}
+            {plan.risky ? (
+              <p className="relaxed">{COPY.mapsRisky}</p>
+            ) : (
+              !plan.exact && <p className="relaxed">{COPY.mapsMismatch}</p>
+            )}
           </div>
           <button type="button" className="btn btn-secondary pressable" onClick={onAnother}>
             {premium ? "Try again" : COPY.actions.another}

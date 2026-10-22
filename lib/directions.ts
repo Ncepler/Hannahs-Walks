@@ -1,7 +1,9 @@
 import { COPY, FT_PER_METER, METERS_PER_MILE } from './config';
-import { placeNoun, primaryStreet } from './describe';
+import { CROSSING_DETAIL, CROSSING_RIGHT_CELL, CROSSING_TITLE, crossingFromTo, turnBackText } from './crossingCopy';
+import { longStreet, placeNoun, primaryStreet } from './describe';
 import { bearing, turnDelta } from './geo';
 import { isOneWay, nodes, traverse, type Traversal } from './graph';
+import { forbiddenRoadOf } from './rules';
 import type { NodeId } from './types';
 
 export interface DirNote {
@@ -11,7 +13,7 @@ export interface DirNote {
 }
 
 export interface DirStep {
-  kind: 'street' | 'turnaround' | 'arrive';
+  kind: 'street' | 'turnaround' | 'arrive' | 'crossing';
   /** Lead words, e.g. "Turn right onto". Empty on the arrival step. */
   turn: string;
   /** Street name as it reads on the sign; the whole line for turnaround and arrival steps. */
@@ -21,6 +23,10 @@ export interface DirStep {
   cumMeters: number;
   cue: string | null;
   notes: DirNote[];
+  /** Muted line under the title (the crossing step: where you come from and go to). */
+  sub?: string;
+  /** Right-hand cell instead of a distance (the crossing step: "+1 min"). */
+  right?: string;
 }
 
 /** Under a tenth of a mile is feet to the nearest 50; otherwise miles to one decimal. */
@@ -46,14 +52,17 @@ export function turnWord(delta: number): string {
 
 const TURNAROUND: Record<string, string> = {
   CEDARMERE: 'Turn around at Cedarmere',
-  NCMA: 'Turn around at the museum grounds',
-  VIADUCT: 'Pause at the pond',
   VILLAGE: 'Pause at Roslyn village',
   LIBRARY: 'Pause at the library',
   POPLAR_ASH: 'Turn around at the ridge',
   POPLAR_W: 'Turn around at the ridge',
 };
-const turnaroundLine = (id: NodeId) => TURNAROUND[id] ?? `Turn around at ${nodes[id].name}`;
+/** At a street end on a road we do not walk, say so; elsewhere the §11.2 wording. */
+function turnaroundText(before: Traversal[], id: NodeId): string {
+  const road = nodes[id].kind === 'terminus' ? forbiddenRoadOf(nodes[id].name) : null;
+  if (road) return turnBackText(longStreet(primaryStreet(before[before.length - 1].seg.street)), road);
+  return TURNAROUND[id] ?? `Turn around at ${nodes[id].name}`;
+}
 
 function hillCue(legs: Traversal[]): string | null {
   let climb = 0;
@@ -82,7 +91,9 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
   for (const leg of legs) {
     const group = groups[groups.length - 1];
     const prev = group?.[group.length - 1];
-    const sameStreet = !!prev && primaryStreet(prev.seg.street) === primaryStreet(leg.seg.street);
+    // A signal crossing is its own step, never merged with the street before or after it.
+    const sameStreet =
+      !!prev && primaryStreet(prev.seg.street) === primaryStreet(leg.seg.street) && prev.seg.kind !== 'crossing' && leg.seg.kind !== 'crossing';
     const reversal = !!prev && leg.to === prev.from;
     if (group && sameStreet && !reversal) group.push(leg);
     else {
@@ -98,7 +109,28 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
     const meters = g.reduce((m, t) => m + t.seg.meters, 0);
 
     if (turnAfter.has(i)) {
-      steps.push({ kind: 'turnaround', turn: '', street: turnaroundLine(first.from), meters: 0, cumMeters: cum, cue: null, notes: [] });
+      steps.push({ kind: 'turnaround', turn: '', street: turnaroundText(groups[i - 1], first.from), meters: 0, cumMeters: cum, cue: null, notes: [] });
+    }
+
+    if (first.seg.kind === 'crossing') {
+      cum += meters;
+      const before = groups[i - 1]?.[groups[i - 1].length - 1];
+      const after = groups[i + 1]?.[0];
+      steps.push({
+        kind: 'crossing',
+        turn: '',
+        street: CROSSING_TITLE,
+        sub: crossingFromTo(
+          longStreet(before ? primaryStreet(before.seg.street) : nodes[first.from].name),
+          longStreet(after ? primaryStreet(after.seg.street) : nodes[first.to].name),
+        ),
+        right: CROSSING_RIGHT_CELL,
+        meters,
+        cumMeters: cum,
+        cue: null,
+        notes: [{ text: CROSSING_DETAIL, caution: true }],
+      });
+      return;
     }
 
     let turn = 'Head out of Home onto';
@@ -146,7 +178,7 @@ export function buildDirections(path: readonly NodeId[]): DirStep[] {
 export function stepsToText(title: string, summary: string, steps: DirStep[]): string {
   const lines = [title, summary, COPY.directionsHeader, ''];
   steps.forEach((s, i) => {
-    const head = s.kind === 'street' ? `${s.turn} ${s.street}` : s.street;
+    const head = s.kind === 'street' ? `${s.turn} ${s.street}` : s.kind === 'crossing' ? `${s.street} (${s.sub}, ${s.right})` : s.street;
     const tail = s.kind === 'street' ? ` (${fmtStepDistance(s.meters)}, ${fmtCumulative(s.cumMeters)})` : '';
     lines.push(`${i + 1}. ${head}${tail}${s.cue ? `: ${s.cue}` : ''}`);
     for (const n of s.notes) lines.push(`   ${n.text}`);

@@ -1,5 +1,6 @@
 import { COMPOSE_MAX_MILES, COMPOSE_MIN_MILES, HOME_ID } from './config';
-import { adj, LANDMARKS, milesOf, nodes } from './graph';
+import { adj, LANDMARKS, milesOf, nodes, segmentBetween } from './graph';
+import { checkPath } from './rules';
 import type { NodeId, WalkKind } from './types';
 
 export interface ComposedWalk {
@@ -15,7 +16,6 @@ export interface Composition {
   ms: number;
 }
 
-const SPUR: Record<NodeId, NodeId> = { NB_MUSEUM: 'NCMA', WITTES_BRYANT: 'CEDARMERE' };
 const reversedTail = (p: readonly NodeId[]) => p.slice(0, -1).reverse(); // p[-2::-1]
 
 /** All simple paths from src, total length <= maxm meters. */
@@ -85,6 +85,7 @@ export function composeAll(): Composition {
   const add = (p: NodeId[], kind: WalkKind) => {
     const miles = milesOf(p);
     if (miles < COMPOSE_MIN_MILES || miles > COMPOSE_MAX_MILES) return;
+    if (!checkPath(p, segmentBetween, nodes).ok) return;
     const key = p.join('>');
     if (!walks.has(key)) walks.set(key, { path: p, kind });
   };
@@ -120,26 +121,6 @@ export function composeAll(): Composition {
     }
   }
 
-  // 4. spurs: each loop iterates over a snapshot taken when it starts
-  for (const base of [...walks.values()]) {
-    for (const [hub, dest] of Object.entries(SPUR)) {
-      const w = base.path;
-      if (w.includes(hub) && !w.includes(dest)) {
-        const i = w.indexOf(hub);
-        add([...w.slice(0, i + 1), dest, hub, ...w.slice(i + 1)], base.kind);
-      }
-    }
-  }
-  for (const base of [...walks.values()]) {
-    const w = base.path;
-    if (w.includes('NB_MUSEUM') && w.includes('WITTES_BRYANT') && !w.includes('NCMA') && !w.includes('CEDARMERE')) {
-      const i = w.indexOf('NB_MUSEUM');
-      const w1 = [...w.slice(0, i + 1), 'NCMA', 'NB_MUSEUM', ...w.slice(i + 1)];
-      const j = w1.indexOf('WITTES_BRYANT');
-      add([...w1.slice(0, j + 1), 'CEDARMERE', 'WITTES_BRYANT', ...w1.slice(j + 1)], base.kind);
-    }
-  }
-
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   cached = { cycles: cycles.size, walks: [...walks.values()], ms: t1 - t0 };
   return cached;
@@ -159,6 +140,7 @@ export function composeOneWay(): ComposedWalk[] {
       const miles = milesOf(p);
       return miles >= COMPOSE_MIN_MILES && miles <= COMPOSE_MAX_MILES;
     })
+    .filter((p) => checkPath(p, segmentBetween, nodes).ok)
     .map((path) => ({ path, kind: 'one-way' as const }));
   return cachedOneWay;
 }

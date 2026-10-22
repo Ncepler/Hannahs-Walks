@@ -14,6 +14,7 @@ import { APP_NAME, COPY, relaxedLine } from "@/lib/config";
 import { joinList } from "@/lib/describe";
 import { isOneWay, validatePath } from "@/lib/graph";
 import { selectWaypoints } from "@/lib/maps";
+import { mapsMaxWaypoints } from "@/lib/mapsLimits";
 import { apiFetch } from "@/lib/api";
 import { another, plan, routeFromPath, type Answers, type PlanSession, type PoolRoute } from "@/lib/score";
 import { PLANNER_CONNECTED } from "@/lib/site";
@@ -61,7 +62,11 @@ export default function Page() {
   const [dirOpen, setDirOpen] = useState(false);
   const [startFromHome, setStartFromHome] = useState(false);
   const dirRoute = mode === "regular" ? route : (ai?.route ?? null);
-  const plan4 = useMemo(() => (dirRoute ? selectWaypoints(dirRoute.path) : null), [dirRoute]);
+  // Read the Maps pin limit when the sheet opens (3 on mobile browsers, 9 elsewhere), never during render on the server.
+  const plan4 = useMemo(
+    () => (dirRoute && dirOpen ? selectWaypoints(dirRoute.path, mapsMaxWaypoints(navigator.userAgent, navigator.maxTouchPoints)) : null),
+    [dirRoute, dirOpen],
+  );
 
   const formRef = useRef(form);
   const phaseRef = useRef<Phase>("asking");

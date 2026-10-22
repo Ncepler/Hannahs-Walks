@@ -1,7 +1,8 @@
 // Run from the repo root: npx tsx scripts/acceptance.ts
-// Imports the real data and libs. The only literals are the expected numbers from the spec.
+// Imports the real data and libs. The only literals are the expected numbers from ROADS-ADDENDUM.md §5.2 and §9.
 import fs from 'node:fs';
 import path from 'node:path';
+import { BARRIER_LINKS } from '../data/barrier-links';
 import { CURATED } from '../data/curated';
 import { NODES } from '../data/nodes';
 import { SEGMENTS } from '../data/segments';
@@ -13,10 +14,15 @@ import { corsHeaders, preflight } from '../lib/cors';
 import { codeOk, COOKIE, hasAccess, proof, token } from '../lib/session';
 import { buildDirections, fmtStepDistance, stepsToText, turnWord } from '../lib/directions';
 import { embedUrl, mapsLink, selectWaypoints, simulate } from '../lib/maps';
-import { MAPS_MAX_WAYPOINTS } from '../lib/config';
-import { computeStats, isClosedLoop, isOneWay, LANDMARKS, milesOf, retraceOf, reversalHolds, segmentsBetween, traverse, validatePath } from '../lib/graph';
-import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, type Answers, type Stop } from '../lib/score';
-import type { Mood } from '../lib/types';
+import { mapsMaxWaypoints, MAPS_MAX_WAYPOINTS_MOBILE, MAPS_MAX_WAYPOINTS_OTHER } from '../lib/mapsLimits';
+import { buildMapsUrl } from '../lib/mapsUrl';
+import { adj, computeStats, isClosedLoop, isOneWay, LANDMARKS, milesOf, retraceOf, reversalHolds, segmentBetween, segmentsBetween, traverse, validatePath, nodes as graphNodes } from '../lib/graph';
+import { CROSSING_DETAIL, CROSSING_TITLE } from '../lib/crossingCopy';
+import { chooseWaypoints } from '../lib/waypoints';
+import { checkPath, forbiddenRoadOf, FORBIDDEN_ASK, GLEN_COVE_CROSSINGS, isLegalSegment, MAX_CROSSINGS_PER_WALK, NORTHERN_CROSSINGS } from '../lib/rules';
+import { another, apmOf, defaultAnswers, diversePicks, getPool, minutesFor, plan, rank, reachedByOneDoor, type Answers, type Stop } from '../lib/score';
+import type { Mood, Segment } from '../lib/types';
+import { runRuleVectors } from './rules-vectors';
 
 let failures = 0;
 const out = (line = '') => process.stdout.write(`${line}\n`);
@@ -27,50 +33,60 @@ function check(id: string, what: string, ok: boolean, actual: string) {
 }
 const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
 
-// §7 test vector: id, miles, meters, climb ft, max grade %, quiet %, busy %, scenic,
-// clear, workout, ponder, minutes at 20 min/mi (+3 min per 100 ft).
+// ROADS-ADDENDUM §5.2 test vector: id, miles, meters, climb ft, max grade %, quiet %, busy %, crossings,
+// clear, workout, ponder, minutes (steady: 20 min/mi + 3 min per 100 ft + 1 min per crossing).
 type VectorRow = [string, number, number, number, number, number, number, number, number, number, number, number];
 const VECTOR: VectorRow[] = [
-  ['R01', 0.63, 1017.9, 94, 7.8, 100, 0, 0.51, 0.56, 0.51, 0.47, 15],
-  ['R02', 0.46, 747.4, 27, 3.9, 100, 0, 0.33, 0.67, 0.25, 0.44, 10],
-  ['R03', 0.87, 1396.2, 110, 7.2, 100, 0, 0.33, 0.60, 0.54, 0.43, 21],
-  ['R04', 1.11, 1786.9, 103, 7.8, 100, 0, 0.60, 0.63, 0.56, 0.56, 25],
-  ['R05', 1.28, 2060.8, 92, 7.2, 100, 0, 0.44, 0.63, 0.55, 0.51, 28],
-  ['R06', 1.46, 2353.6, 153, 7.8, 100, 0, 0.53, 0.67, 0.70, 0.53, 34],
-  ['R07', 1.44, 2318.0, 130, 7.2, 100, 0, 0.33, 0.63, 0.65, 0.46, 33],
-  ['R08', 2.13, 3426.2, 162, 7.8, 100, 0, 0.61, 0.70, 0.68, 0.64, 47],
-  ['R09', 2.87, 4620.5, 168, 8.5, 54, 13, 0.53, 0.53, 0.67, 0.51, 62],
-  ['R10', 2.87, 4620.5, 168, 8.5, 54, 13, 0.53, 0.53, 0.67, 0.51, 62],
-  ['R11', 3.65, 5876.4, 222, 8.5, 42, 20, 0.45, 0.44, 0.71, 0.46, 80],
-  ['R12', 2.98, 4798.8, 157, 7.2, 48, 7, 0.60, 0.54, 0.65, 0.54, 64],
-  ['R13', 3.95, 6357.2, 333, 7.2, 36, 35, 0.46, 0.35, 0.75, 0.45, 89],
-  ['R14', 4.04, 6495.4, 384, 8.5, 52, 17, 0.53, 0.41, 0.83, 0.56, 92],
-  ['R15', 4.29, 6904.3, 384, 8.5, 49, 16, 0.59, 0.42, 0.81, 0.59, 97],
-  ['R16', 5.11, 8228.9, 417, 8.5, 41, 37, 0.61, 0.36, 0.76, 0.64, 115],
-  ['R17', 6.01, 9668.5, 313, 7.2, 16, 44, 0.49, 0.32, 0.65, 0.53, 130],
-  ['R18', 4.37, 7035.2, 436, 8.5, 60, 0, 0.71, 0.54, 0.87, 0.65, 101],
-  ['R19', 3.11, 5010.6, 382, 8.5, 100, 0, 0.63, 0.56, 0.87, 0.53, 74],
-  ['R20', 4.75, 7637.5, 344, 7.2, 30, 29, 0.49, 0.33, 0.73, 0.52, 105],
-  ['R21', 5.27, 8482.2, 346, 7.2, 27, 26, 0.60, 0.38, 0.72, 0.55, 116],
-  ['R22', 0.70, 1131.2, 37, 3.9, 100, 0, 0.33, 0.68, 0.29, 0.46, 15],
+  ['R01', 0.63, 1017.9, 94, 7.8, 100, 0, 0, 0.56, 0.51, 0.47, 15],
+  ['R02', 0.46, 747.4, 27, 4.5, 100, 0, 0, 0.66, 0.26, 0.43, 10],
+  ['R03', 0.87, 1396.2, 110, 7.2, 100, 0, 0, 0.60, 0.54, 0.43, 21],
+  ['R04', 1.11, 1786.9, 103, 7.8, 100, 0, 0, 0.63, 0.56, 0.56, 25],
+  ['R05', 1.28, 2060.8, 92, 7.2, 100, 0, 0, 0.62, 0.55, 0.51, 28],
+  ['R06', 1.46, 2353.6, 153, 7.8, 100, 0, 0, 0.65, 0.70, 0.53, 34],
+  ['R07', 1.44, 2318.0, 130, 7.2, 100, 0, 0, 0.63, 0.65, 0.46, 33],
+  ['R08', 2.13, 3426.2, 162, 7.8, 100, 0, 0, 0.67, 0.68, 0.64, 47],
+  ['R18', 4.39, 7063.4, 454, 8.5, 60, 0, 0, 0.49, 0.88, 0.72, 101],
+  ['R19', 3.11, 5010.6, 382, 8.5, 100, 0, 0, 0.54, 0.87, 0.53, 74],
+  ['R22', 0.70, 1131.2, 37, 4.5, 100, 0, 0, 0.67, 0.30, 0.46, 15],
+  ['N01', 1.93, 3106.1, 124, 6.9, 74, 0, 0, 0.63, 0.62, 0.48, 42],
+  ['N02', 2.44, 3934.5, 250, 8.5, 85, 0, 0, 0.61, 0.78, 0.58, 56],
+  ['N03', 3.34, 5376.9, 305, 8.5, 81, 0, 0, 0.58, 0.80, 0.55, 76],
+  ['N04', 4.81, 7736.1, 429, 8.5, 56, 0, 0, 0.48, 0.84, 0.68, 109],
+  ['N05', 4.63, 7456.7, 454, 8.5, 57, 0, 0, 0.48, 0.86, 0.71, 106],
+  ['N06', 6.27, 10094.6, 489, 8.5, 42, 0, 0, 0.45, 0.81, 0.67, 140],
+  ['N07', 1.65, 2656.6, 72, 8.3, 98, 2, 2, 0.61, 0.57, 0.46, 37],
+  ['N08', 2.23, 3592.5, 123, 8.3, 99, 1, 2, 0.60, 0.63, 0.46, 50],
+  ['N09', 2.74, 4409.2, 147, 8.3, 99, 1, 2, 0.60, 0.66, 0.46, 61],
+  ['N10', 3.34, 5369.4, 213, 8.3, 99, 1, 2, 0.58, 0.73, 0.46, 75],
+  ['N11', 3.45, 5553.8, 367, 8.5, 81, 0, 0, 0.55, 0.85, 0.58, 80],
+  ['N12', 1.95, 3144.3, 125, 8.3, 99, 1, 2, 0.60, 0.64, 0.47, 45]
 ];
 
+const reachableFromHome = () => {
+  const seen = new Set<string>(['HOME']);
+  const queue = ['HOME'];
+  while (queue.length) for (const [nb] of adj[queue.shift()!]) if (!seen.has(nb)) (seen.add(nb), queue.push(nb));
+  return seen;
+};
+
 function phase1() {
-  section('Data (Phase 1)');
+  section('Data and rules (Stage 1)');
 
   const nodeIds = Object.keys(NODES);
   const totalM = SEGMENTS.reduce((sum, s) => sum + s.meters, 0);
-  check('A1', '39 nodes', nodeIds.length === 39, `${nodeIds.length}`);
-  check('A1', '48 segments', SEGMENTS.length === 48, `${SEGMENTS.length}`);
-  check('A1', 'total length 19,347.9 m (±0.5)', near(totalM, 19347.9, 0.5), `${totalM.toFixed(1)} m = ${(totalM / METERS_PER_MILE).toFixed(2)} mi`);
+  const reach = reachableFromHome();
+  check('A1', '68 nodes', nodeIds.length === 68, `${nodeIds.length}`);
+  check('A1', '82 segments', SEGMENTS.length === 82, `${SEGMENTS.length}`);
+  check('A1', 'total length 21,225.2 m (±0.5)', near(totalM, 21225.2, 0.5), `${totalM.toFixed(1)} m = ${(totalM / METERS_PER_MILE).toFixed(2)} mi`);
+  check('A1', 'every node reachable from HOME over legal segments', nodeIds.every((id) => reach.has(id)), `${reach.size} of ${nodeIds.length}`);
 
   const missing = SEGMENTS.filter((s) => !(s.a in NODES) || !(s.b in NODES)).map((s) => s.id);
   const dupes = SEGMENTS.filter((s) => segmentsBetween(s.a, s.b).length !== 1).map((s) => s.id);
   check('A2', 'every segment end exists', missing.length === 0, missing.join(',') || 'none missing');
   check('A2', 'no duplicate segment between a node pair', dupes.length === 0, dupes.join(',') || 'none duplicated');
 
-  const invalid = CURATED.filter((r) => !validatePath([...r.path]).ok).map((r) => r.id);
-  check('A3', `${CURATED.length} curated routes pass the validators`, invalid.length === 0, invalid.join(',') || 'all valid');
+  const invalid = CURATED.filter((r) => !validatePath([...r.path]).ok || !checkPath(r.path, segmentBetween, graphNodes).ok).map((r) => r.id);
+  check('A3', `${CURATED.length} curated routes pass the validators and checkPath`, invalid.length === 0 && CURATED.length === 23, invalid.join(',') || 'all valid');
 
   const byId = new Map(VECTOR.map((row) => [row[0], row]));
   const off: string[] = [];
@@ -83,18 +99,18 @@ function phase1() {
       continue;
     }
     compared++;
-    const [, mi, m, climb, grade, quiet, busy, scenic, , , , minutes] = v;
-    const mins = st.miles * 20 + (3 * st.ascentFt) / 100;
+    const [, mi, m, climb, grade, quiet, busy, cross, , , , minutes] = v;
+    const mins = minutesFor(st, 'steady');
     if (!near(st.meters, m, 1)) off.push(`${r.id} meters ${st.meters.toFixed(1)} vs ${m}`);
     if (!near(st.miles, mi, 0.005)) off.push(`${r.id} miles ${st.miles.toFixed(2)} vs ${mi}`);
     if (!near(st.ascentFt, climb, 1)) off.push(`${r.id} ascent ${st.ascentFt} vs ${climb}`);
     if (!near(st.maxGradePct, grade, 0.05)) off.push(`${r.id} grade ${st.maxGradePct.toFixed(2)} vs ${grade}`);
-    if (!near(st.quietShare * 100, quiet, 0.5)) off.push(`${r.id} quiet ${(st.quietShare * 100).toFixed(1)} vs ${quiet}`);
-    if (!near(st.busyShare * 100, busy, 0.5)) off.push(`${r.id} busy ${(st.busyShare * 100).toFixed(1)} vs ${busy}`);
-    if (!near(st.scenic, scenic, 0.005)) off.push(`${r.id} scenic ${st.scenic.toFixed(3)} vs ${scenic}`);
+    if (Math.round(st.quietShare * 100) !== quiet) off.push(`${r.id} quiet ${(st.quietShare * 100).toFixed(1)} vs ${quiet}`);
+    if (Math.round(st.busyShare * 100) !== busy) off.push(`${r.id} busy ${(st.busyShare * 100).toFixed(1)} vs ${busy}`);
+    if (st.crossings !== cross) off.push(`${r.id} crossings ${st.crossings} vs ${cross}`);
     if (Math.round(mins) !== minutes) off.push(`${r.id} minutes ${mins.toFixed(1)} vs ${minutes}`);
   }
-  check('A4', `meters ±1, miles, ascent ±1 ft (and grade, quiet, busy, scenic, minutes) match the vector for ${compared} routes`, off.length === 0 && compared === CURATED.length, off.join('; ') || 'all match');
+  check('A4', `meters ±1, miles, ascent ±1 ft (and grade, quiet, busy, crossings, minutes) match the §5.2 vector for ${compared} routes`, off.length === 0 && compared === CURATED.length, off.join('; ') || 'all match');
 
   const badReverse = CURATED.filter((r) => !reversalHolds([...r.path])).map((r) => r.id);
   check('A5', 'reversing a route keeps meters and swaps ascent/descent', badReverse.length === 0, badReverse.join(',') || 'all hold');
@@ -111,7 +127,7 @@ function phase1() {
     }
   };
   for (const d of ['app', 'components', 'lib']) walk(path.join(root, d));
-  const streets = '(?:Birch|Elm|Chestnut|Sycamore|Cypress|Fir|Poplar|Ash|Pinewood|Teakwood|Midwood|Maplewood|Greenwood|Harbor Hill|Round Hill|Glen Cove|Northern|Museum|Wittes|Bryant|Old Northern|East Broadway|Main|Glen|Roslyn|Red Ground|Old Farm)';
+  const streets = '(?:Birch|Elm|Chestnut|Sycamore|Cypress|Fir|Poplar|Ash|Pinewood|Teakwood|Midwood|Maplewood|Greenwood|Harbor Hill|Round Hill|Glen Cove|Northern|Wittes|Bryant|Old Northern|East Broadway|Main|Glen|Roslyn|Red Ground|Old Farm)';
   const houseNumber = new RegExp(`\\b\\d{1,5}\\s+(?:[NSEW]\\.?\\s+)?${streets}\\b`);
   const hits: string[] = [];
   for (const f of files) {
@@ -126,31 +142,105 @@ function phase1() {
   check('A6', `no house number, ZIP, console logging or place name in metadata (${files.length} files scanned)`, hits.length === 0, hits.join('; ') || 'clean');
 }
 
+// Hard rules (ROADS-ADDENDUM §1, §9): names, geometry, graph legality, copy.
+function rules() {
+  section('Hard rules (Stage 1)');
+  const failures13 = runRuleVectors();
+  check('A13', 'name and geometry vectors pass, including both "Old Northern" rows', failures13.length === 0, failures13.join('; ') || 'all vectors pass');
+
+  const badSeg = SEGMENTS.filter((s) => forbiddenRoadOf(s.street, (s as Segment).ref) !== null && s.id !== 'X01').map((s) => s.id);
+  const crossings = (SEGMENTS as readonly Segment[]).filter((s) => s.kind === 'crossing');
+  const x01 = crossings[0];
+  const termOk = Object.values(NODES)
+    .filter((n) => n.kind === 'terminus')
+    .every((n) => adj[n.id].every(([, id]) => segmentById_(id).street.split(' / ').some((p) => n.name.includes(p.trim()))));
+  const between = segmentBetween;
+  const sampleOf = (id: string) => CURATED.find((c) => c.id === id)!.path;
+  const fake: Segment = { id: 'F1', a: 'ELM_GC', b: 'GC_MIDWOOD', street: 'Glen Cove Rd', meters: 529.2, traffic: 3, scenic: 0, src: 'osrm' };
+  const withFake = (a: string, b: string) => ((a === 'ELM_GC' && b === 'GC_MIDWOOD') || (a === 'GC_MIDWOOD' && b === 'ELM_GC') ? fake : segmentBetween(a, b));
+  const fakeCross: Segment = { ...(x01 as Segment), id: 'X99' };
+  const withFakeCross = (a: string, b: string) => {
+    const s = segmentBetween(a, b);
+    return s && s.id === 'X01' ? fakeCross : s;
+  };
+  const n07 = checkPath(sampleOf('N07'), between, graphNodes);
+  const threeX = checkPath(['GC_MIDWOOD', 'GCX_E', 'GC_MIDWOOD', 'GCX_E'], between, graphNodes);
+  const throughTerminus = checkPath(['ELM_PINE', 'ELM_GC', 'GC_MIDWOOD'], withFake, graphNodes);
+  const rejectsFake = !checkPath(['ELM_GC', 'GC_MIDWOOD'], withFake, graphNodes).ok;
+  const rejectsThree = !threeX.ok && /3 crossings/.test(threeX.reasons.join());
+  const rejectsTerminus = !throughTerminus.ok && throughTerminus.reasons.some((r) => /dead end/.test(r));
+  const rejectsUnlisted = !checkPath(['GC_MIDWOOD', 'GCX_E'], withFakeCross, graphNodes).ok;
+  check(
+    'A14',
+    'no forbidden segment; exactly one crossing X01 (GC_MIDWOOD <-> GCX_E), whitelisted; terminus neighbours on their own street',
+    badSeg.length === 0 && crossings.length === 1 && x01.id === 'X01' && [x01.a, x01.b].sort().join() === 'GCX_E,GC_MIDWOOD' && GLEN_COVE_CROSSINGS.includes('X01') && NORTHERN_CROSSINGS.length === 0 && SEGMENTS.every((s) => isLegalSegment(s)) && termOk,
+    `${badSeg.length} forbidden, ${crossings.length} crossing(s), terminus streets ${termOk}`,
+  );
+  check('A14', 'checkPath rejects a fabricated Glen Cove Rd segment, three crossings, a path through a terminus, and a crossing id that is not whitelisted', rejectsFake && rejectsThree && rejectsTerminus && rejectsUnlisted, [rejectsFake, rejectsThree, rejectsTerminus, rejectsUnlisted].join(' '));
+  check('A14', 'checkPath accepts N07: 2 crossings, 120 s of waiting', n07.ok && n07.crossings === 2 && n07.waitSeconds === 120 && MAX_CROSSINGS_PER_WALK === 2, `${n07.crossings} crossings, ${n07.waitSeconds} s`);
+
+  // A19: copy sweep. "museum" nowhere; the two roads only in the files that carry the crossing, legend and rule copy.
+  const root = process.cwd();
+  const all: string[] = [];
+  const walkDir = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walkDir(p);
+      else if (/\.(ts|tsx|css|html|txt|svg)$/.test(entry.name)) all.push(p);
+    }
+  };
+  for (const d of ['app', 'components', 'lib', 'data']) walkDir(path.join(root, d));
+  const museumHits = all.filter((f) => !f.endsWith(path.join('data', 'expected-streets.ts')) && /museum/i.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(root, f));
+  const ROAD_COPY_OK = new Set(['lib/rules.ts', 'lib/crossingCopy.ts', 'lib/config.ts', 'lib/ai.ts', 'data/nodes.ts', 'data/segments.ts', 'data/curated.ts', 'data/barrier-links.ts', 'data/expected-streets.ts']);
+  const roadHits = all
+    .map((f) => path.relative(root, f))
+    .filter((f) => !ROAD_COPY_OK.has(f) && /Northern Blvd|Northern Boulevard|Glen Cove/.test(fs.readFileSync(path.join(root, f), 'utf8')));
+  const wizard = fs.readFileSync(path.join(root, 'components/Wizard.tsx'), 'utf8');
+  check('A19', 'no "museum" in app/, components/, lib/, data/ (expected-streets aside); the wizard offers "East Hills (across the signal)"; the roads are named only in the allowed copy files', museumHits.length === 0 && roadHits.length === 0 && wizard.includes('East Hills (across the signal)') && wizard.includes('One crossing each way, with a signal.'), `museum: ${museumHits.join(',') || 'none'}; roads: ${roadHits.join(',') || 'allowed files only'}`);
+  const strayRule = all
+    .map((f) => path.relative(root, f))
+    .filter((f) => f !== 'lib/rules.ts' && /(?:===|==|includes\(|startsWith\()\s*['"`](?:glen cove|northern)/i.test(fs.readFileSync(path.join(root, f), 'utf8')));
+  check('A19', 'no file but lib/rules.ts compares a street name with "glen cove" or "northern"', strayRule.length === 0, strayRule.join(',') || 'none');
+}
+const segmentById_ = (id: string) => SEGMENTS.find((s) => s.id === id)!;
+
 function phase2() {
-  section('Composer and scoring (Phase 2)');
+  section('Composer and scoring (Stage 1)');
 
   const comp = composeAll();
-  const bad = comp.walks.filter((w) => !validatePath(w.path).ok).length;
+  const bad = comp.walks.filter((w) => !validatePath(w.path).ok || !checkPath(w.path, segmentBetween, graphNodes).ok).length;
   const outside = comp.walks.filter((w) => {
     const mi = milesOf(w.path);
     return mi < 0.4 || mi > 7.5;
   }).length;
   const multisets = new Set(comp.walks.map((w) => traverse(w.path).map((t) => t.seg.id).sort().join(','))).size;
-  check('A7', '116 simple cycles', comp.cycles === 116, `${comp.cycles}`);
-  check('A7', '3,296 closed walks', comp.walks.length === 3296, `${comp.walks.length} in ${comp.ms.toFixed(0)} ms`);
-  check('A7', 'all walks pass the validators, none outside 0.4 - 7.5 mi', bad === 0 && outside === 0, `${bad} invalid, ${outside} out of range`);
-  check('A7', '2,307 distinct segment multisets', multisets === 2307, `${multisets}`);
+  const bands = [0, 0, 0, 0];
+  let signal = 0;
+  let most = 0;
+  for (const w of comp.walks) {
+    const mi = milesOf(w.path);
+    bands[mi < 1.5 ? 0 : mi < 3 ? 1 : mi < 5 ? 2 : 3]++;
+    const x = computeStats(w.path).crossings;
+    if (x > 0) signal++;
+    most = Math.max(most, x);
+  }
+  check('A16', '270 simple cycles', comp.cycles === 270, `${comp.cycles}`);
+  check('A16', '13,042 closed walks', comp.walks.length === 13042, `${comp.walks.length} in ${comp.ms.toFixed(0)} ms`);
+  check('A16', '10,379 distinct segment multisets', multisets === 10379, `${multisets}`);
+  check('A16', 'by length: < 1.5 mi 70 · 1.5 - 3 mi 641 · 3 - 5 mi 4,464 · over 5 mi 7,867', bands.join() === '70,641,4464,7867', bands.join(' · '));
+  check('A16', '4,278 walks cross the signal; none crosses more than twice; every walk passes checkPath and 0.4 - 7.5 mi', signal === 4278 && most <= 2 && bad === 0 && outside === 0, `${signal} cross, most ${most}, ${bad} invalid, ${outside} out of range`);
 
   const pool = getPool();
   const curated = pool.routes.filter((r) => r.origin === 'curated');
   const top = (mood: Mood, n: number) => [...curated].sort((a, b) => b.scores[mood] - a.scores[mood]).slice(0, n).map((r) => r.id);
   const inSet = (ids: string[], allowed: string[]) => ids.every((id) => allowed.includes(id));
   const clearTop = top('clear', 3);
-  const workTop = top('workout', 4);
-  const ponderTop = top('ponder', 4);
-  check('A8', 'clear: top 3 within {R02,R04,R05,R06,R08,R22}', inSet(clearTop, ['R02', 'R04', 'R05', 'R06', 'R08', 'R22']), clearTop.join(' '));
-  check('A8', 'workout: top 4 within {R14,R15,R16,R18,R19}, R18 and R19 first two', inSet(workTop, ['R14', 'R15', 'R16', 'R18', 'R19']) && inSet(workTop.slice(0, 2), ['R18', 'R19']), workTop.join(' '));
-  check('A8', 'ponder: top 4 within {R04,R08,R15,R16,R18}, R18 or R08 first', inSet(ponderTop, ['R04', 'R08', 'R15', 'R16', 'R18']) && ['R18', 'R08'].includes(ponderTop[0]), ponderTop.join(' '));
+  const workTop = top('workout', 3);
+  const ponderTop = top('ponder', 3);
+  check('A8', 'clear: top 3 within {R08,R22,R02,R06,R04}', inSet(clearTop, ['R08', 'R22', 'R02', 'R06', 'R04']), clearTop.join(' '));
+  check('A8', 'workout: top 3 within {R18,R19,N05,N11,N04}, R18 and R19 first two', inSet(workTop, ['R18', 'R19', 'N05', 'N11', 'N04']) && inSet(workTop.slice(0, 2), ['R18', 'R19']), workTop.join(' '));
+  check('A8', 'ponder: top 3 within {R18,N05,N04,N06,R08}, R18 first', inSet(ponderTop, ['R18', 'N05', 'N04', 'N06', 'R08']) && ponderTop[0] === 'R18', ponderTop.join(' '));
   const offScores: string[] = [];
   for (const row of VECTOR) {
     const r = curated.find((c) => c.id === row[0])!;
@@ -159,44 +249,51 @@ function phase2() {
     if (!near(r.scores.workout, w, 0.0051)) offScores.push(`${row[0]} work ${r.scores.workout.toFixed(3)} vs ${w}`);
     if (!near(r.scores.ponder, p, 0.0051)) offScores.push(`${row[0]} ponder ${r.scores.ponder.toFixed(3)} vs ${p}`);
   }
-  check('A8', 'all 66 mood scores match the §7 vector to 2 decimals', offScores.length === 0, offScores.join('; ') || 'all match');
+  check('A8', 'all 69 mood scores match the §5.2 vector to 2 decimals', offScores.length === 0, offScores.join('; ') || 'all match');
   out(`  INFO  pool: ${pool.curated} curated + ${pool.composed} composed (${pool.duplicatesDropped} composed dropped as curated duplicates)`);
 
   const base = (mood: Mood, over: Partial<Answers>): Answers => ({ ...defaultAnswers(mood), pace: 'steady', ...over });
   const stops = (...s: Stop[]) => new Set<Stop>(s);
 
-  // A9 is the spec's filter pipeline on the whole pool. A flat, quiet half hour and a hilly hour and a half
-  // only exist as out-and-backs here, so these two run with "End back at Home" unchecked (X7 covers the loops).
+  // A9: the filter pipeline on the whole pool. A flat, quiet half hour and a hilly hour and a half only exist as
+  // out-and-backs, so those two run with "End back at Home" unchecked (X7 covers the loops).
   const a1 = base('clear', { time: { min: 30 }, hills: 'flat', avoidBusy: true, returnHome: false });
   const r1 = rank(a1);
   const t1 = r1.ranked[0];
-  check('A9', 'clear, 30 min, flat, avoid busy: 24 - 36 min, apm <= 70, busy <= 0.10, nothing relaxed', !!t1 && r1.relaxed.length === 0 && t1.minutes >= 24 && t1.minutes <= 36 && apmOf(t1.route.stats) <= 70 && t1.route.stats.busyShare <= 0.1, `${t1?.route.name}: ${t1?.minutes.toFixed(0)} min, apm ${t1 ? apmOf(t1.route.stats).toFixed(0) : '-'}; ${r1.count} candidates in the pool`);
+  check('A9', 'clear, 30 min, flat, avoid busy: 24 - 36 min, apm <= 70, busy <= 0.10, no crossings, nothing relaxed', !!t1 && r1.relaxed.length === 0 && t1.minutes >= 24 && t1.minutes <= 36 && apmOf(t1.route.stats) <= 70 && t1.route.stats.busyShare <= 0.1 && t1.route.stats.crossings === 0, `${t1?.route.name}: ${t1?.minutes.toFixed(0)} min, apm ${t1 ? apmOf(t1.route.stats).toFixed(0) : '-'}; ${r1.count} candidates in the pool`);
 
   const a2 = base('workout', { time: { min: 90 }, hills: 'hilly', returnHome: false });
   const r2 = rank(a2);
   const t2 = r2.ranked[0];
   check('A9', 'workout, 90 min, hilly: 72 - 108 min, apm > 100, nothing relaxed', !!t2 && r2.relaxed.length === 0 && t2.minutes >= 72 && t2.minutes <= 108 && apmOf(t2.route.stats) > 100, `${t2?.route.name}: ${t2?.minutes.toFixed(0)} min, apm ${t2 ? apmOf(t2.route.stats).toFixed(0) : '-'}; ${r2.count} candidates in the pool`);
 
-  const a3 = base('ponder', { stops: stops('museum') });
+  const a3 = base('ponder', { time: { min: 120, orMore: true }, stops: stops('cedarmere') });
   const r3 = rank(a3);
-  check('A9', 'ponder with stop museum: visits NCMA', r3.relaxed.length === 0 && !!r3.ranked[0]?.route.visited.has('NCMA'), `${r3.ranked[0]?.route.name}; ${r3.count} candidates`);
+  const t3 = r3.ranked[0];
+  check('A9', 'ponder, 2 hr +, stop Cedarmere: visits CEDARMERE, >= 120 min, nothing relaxed', r3.relaxed.length === 0 && !!t3 && t3.route.visited.has('CEDARMERE') && t3.minutes >= 120, `${t3?.route.name}: ${t3?.minutes.toFixed(0)} min; ${r3.count} candidates in the pool`);
 
-  const a4 = base('ponder', { time: { min: 120, orMore: true }, stops: stops('cedarmere', 'museum') });
+  const a4 = base('clear', { time: { min: 60 }, stops: stops('easthills') });
   const r4 = rank(a4);
   const t4 = r4.ranked[0];
-  check('A9', 'ponder, 2 hr +, Cedarmere + museum: visits both', r4.relaxed.length === 0 && !!t4 && t4.route.visited.has('NCMA') && t4.route.visited.has('CEDARMERE') && t4.minutes >= 100, `${t4?.route.name}: ${t4?.minutes.toFixed(0)} min; ${r4.count} candidates in the pool`);
+  check('A9', 'clear, 1 hr, stop East Hills: visits GCX_E, 48 - 72 min, exactly 2 crossings, nothing relaxed', r4.relaxed.length === 0 && !!t4 && t4.route.visited.has('GCX_E') && t4.minutes >= 48 && t4.minutes <= 72 && t4.route.stats.crossings === 2, `${t4?.route.name}: ${t4?.minutes.toFixed(0)} min; ${r4.count} candidates in the pool`);
 
-  // The reference run counts composed walks before curated duplicates are dropped from the pool.
+  // Avoid busy roads excludes any crossing unless East Hills was picked.
+  const avoid = rank(base('clear', { avoidBusy: true }));
+  const avoidEh = rank(base('clear', { avoidBusy: true, stops: stops('easthills') }));
+  check('A9', '"Keep me off busy roads" drops every route with a crossing, unless East Hills was picked', avoid.ranked.every((s) => s.route.stats.crossings === 0) && avoid.relaxed.length === 0 && avoidEh.ranked.length > 0 && avoidEh.relaxed.length === 0 && avoidEh.ranked.every((s) => s.route.visited.has('GCX_E')), `${avoid.count} routes without; ${avoidEh.count} with East Hills`);
+
+  // The reference run counts composed walks, before curated duplicates are dropped from the pool.
   const composedAll = comp.walks.map((w) => ({ path: w.path, stats: computeStats(w.path) }));
   const refCount = (pred: (x: (typeof composedAll)[number], minutes: number) => boolean) =>
     composedAll.filter((x) => pred(x, minutesFor(x.stats, 'steady'))).length;
-  const n1 = refCount((x, m) => m >= 24 && m <= 36 && apmOf(x.stats) <= 70 && x.stats.busyShare <= 0.1);
+  const n1 = refCount((x, m) => m >= 24 && m <= 36 && apmOf(x.stats) <= 70 && x.stats.busyShare <= 0.1 && x.stats.crossings === 0);
   const n2 = refCount((x, m) => m >= 72 && m <= 108 && apmOf(x.stats) > 100);
-  const n4 = refCount((x, m) => m >= 100 && x.path.includes('NCMA') && x.path.includes('CEDARMERE'));
-  check('A9', 'reference candidate counts reproduce (composed walks, before curated dedupe): 4, 30, 223', n1 === 4 && n2 === 30 && n4 === 223, `${n1}, ${n2}, ${n4}`);
+  const n3 = refCount((x, m) => m >= 120 && x.path.includes('CEDARMERE'));
+  const n4 = refCount((x, m) => m >= 48 && m <= 72 && x.path.includes('GCX_E') && x.stats.crossings === 2);
+  check('A9', 'reference candidate counts reproduce (composed walks, before curated dedupe): 12, 343, 31, 205', n1 === 12 && n2 === 343 && n3 === 31 && n4 === 205, `${n1}, ${n2}, ${n3}, ${n4}`);
 
   const repeats: string[] = [];
-  for (const answers of [defaultAnswers('ponder'), a1, a4, defaultAnswers('workout')]) {
+  for (const answers of [defaultAnswers('ponder'), a1, a3, defaultAnswers('workout')]) {
     const session = plan(answers);
     let prev = session.current.id;
     for (let i = 0; i < 100; i++) {
@@ -221,6 +318,7 @@ function phase2() {
   check('A10', 'and never repeat a route name back to back where other routes exist (3 broad sessions)', sameName.length === 0, sameName.join(',') || '300 calls, 0 repeated names');
 }
 
+
 // "End back at Home" (added after the spec): checked by default, unchecked also offers one-way walks.
 function oneWay() {
   section('End back at Home');
@@ -235,7 +333,7 @@ function oneWay() {
   const pool = getPool();
   check('X1', 'one-way walks: simple paths from HOME ending at a named place, valid, 0.4 - 7.5 mi', walks.length > 0 && bad === 0, `${walks.length} walks, ${bad} bad, ${Math.min(...pool.oneWay.map((r) => r.stats.miles)).toFixed(2)} - ${Math.max(...pool.oneWay.map((r) => r.stats.miles)).toFixed(2)} mi`);
   check('X1', 'the closed-walk pool contains no one-way walk', pool.routes.every((r) => !isOneWay(r.path)), `${pool.routes.length} closed routes`);
-  check('X1', 'the validator still rejects an open path unless oneWay is set', !validatePath(['HOME', 'BIRCH_ELM'], {}).ok && validatePath(['HOME', 'BIRCH_SYC', 'SYC_FIR', 'FIR_CHEST', 'GREEN_CHEST', 'CHEST_NB', 'NB_MUSEUM', 'NCMA'], { oneWay: true }).ok, 'default rejects an open path; oneWay accepts it');
+  check('X1', 'the validator still rejects an open path unless oneWay is set', !validatePath(['HOME', 'BIRCH_ELM'], {}).ok && validatePath(pool.oneWay[0].path, { oneWay: true }).ok, 'default rejects an open path; oneWay accepts it');
 
   // Checked (the default): every result ends at Home, for every mood and for 100 show-another calls each.
   const open: string[] = [];
@@ -284,16 +382,16 @@ function oneWay() {
   // The curated out-and-backs and lollipops are still in the pool; they are just not offered while the box is checked.
   const curatedDoubling = getPool().routes.filter((r) => r.origin === 'curated' && !isClosedLoop(r.retrace)).map((r) => r.id);
   const offered = new Set(rank(defaultAnswers('ponder')).ranked.map((s) => s.route.id));
-  check('X7', 'checked: curated out-and-backs and the Chestnut lollipop are not offered; the true curated loops are', curatedDoubling.length >= 10 && curatedDoubling.every((id) => !offered.has(id)) && ['R01', 'R04', 'R05', 'R09', 'R10', 'R11', 'R14', 'R15', 'R16', 'R17'].every((id) => offered.has(id)), `${curatedDoubling.length} held back (${curatedDoubling.slice(0, 4).join(', ')}, ...)`);
+  check('X7', 'checked: curated out-and-backs and the Chestnut lollipop are not offered; the true curated loops are', curatedDoubling.length >= 10 && curatedDoubling.every((id) => !offered.has(id)) && ['R01', 'R04', 'R05', 'N02', 'N03'].every((id) => offered.has(id)), `${curatedDoubling.length} held back (${curatedDoubling.slice(0, 4).join(', ')}, ...)`);
 
-  // The museum and Cedarmere sit at the ends of dead-end roads, so a walk to one has to go in and out. That is
-  // allowed only for a place the person picked.
-  const museum = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum']) });
-  const museumOk = museum.relaxed.length === 0 && museum.ranked.length > 0 && museum.ranked.every((s) => s.route.visited.has('NCMA') && !s.route.visited.has('CEDARMERE') && isClosedLoop(s.route.retrace, new Set(['NCMA'])));
-  const both = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum', 'cedarmere']) });
-  const bothOk = both.relaxed.length === 0 && both.ranked.length > 0 && both.ranked.every((s) => s.route.visited.has('NCMA') && s.route.visited.has('CEDARMERE') && isClosedLoop(s.route.retrace, new Set(['NCMA', 'CEDARMERE'])));
-  const unasked = rank(defaultAnswers('ponder')).ranked.filter((s) => s.route.visited.has('NCMA') || s.route.visited.has('CEDARMERE')).length;
-  check('X7', 'checked: a picked museum or Cedarmere is reached by its dead-end road only; nobody walks one unasked', museumOk && bothOk && unasked === 0, `museum ${museum.ranked.length} walks, museum + Cedarmere ${both.ranked.length}, unasked ${unasked}`);
+  // East Hills (through the signal) and Cedarmere (up the Bryant Avenue stem) have one way in, so a walk to one goes in and
+  // out. That is allowed only for a place the person picked.
+  const eh = rank({ ...defaultAnswers('clear'), avoidBusy: false, stops: new Set<Stop>(['easthills']) });
+  const ehOk = eh.relaxed.length === 0 && eh.ranked.length > 0 && eh.ranked.every((s) => s.route.visited.has('GCX_E') && (isClosedLoop(s.route.retrace) || reachedByOneDoor(s.route.visited, ['easthills'])));
+  const ced = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['cedarmere']) });
+  const cedOk = ced.relaxed.length === 0 && ced.ranked.length > 0 && ced.ranked.every((s) => s.route.visited.has('CEDARMERE'));
+  const unasked = rank(defaultAnswers('ponder')).ranked.filter((s) => s.route.visited.has('GCX_E') || s.route.visited.has('CEDARMERE')).length;
+  check('X7', 'checked: a picked East Hills or Cedarmere is reached through its one way in; nobody walks there unasked', ehOk && cedOk && unasked === 0, `East Hills ${eh.ranked.length} walks, Cedarmere ${ced.ranked.length}, unasked ${unasked}`);
 
   // Unchecked is as before: walks that double back are still on offer.
   const free = rank({ ...defaultAnswers('clear'), returnHome: false }).ranked;
@@ -301,39 +399,82 @@ function oneWay() {
 }
 
 function phase4() {
-  section('Directions and maps (Phase 4)');
+  section('Directions and maps (Stage 1)');
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((n, i) => n === b[i]);
+  const pathOf = (id: string) => [...CURATED.find((c) => c.id === id)!.path];
 
-  // A11: at most MAPS_MAX_WAYPOINTS nodes, and either the simulated path matches or the route is flagged approximate.
-  let exact = 0;
-  const wrong: string[] = [];
-  const approx: string[] = [];
-  for (const r of CURATED) {
-    const path = [...r.path];
-    const { waypoints, exact: flag } = selectWaypoints(path);
-    const sim = simulate(['HOME', ...waypoints, 'HOME']);
-    if (waypoints.length > MAPS_MAX_WAYPOINTS) wrong.push(`${r.id}: ${waypoints.length} waypoints`);
-    if (flag !== same(sim, path)) wrong.push(`${r.id}: flag ${flag} disagrees with the simulation`);
-    if (flag) exact++;
-    else approx.push(r.id);
+  // A23: waypoints are chosen leg by leg on legal segments plus BARRIER_LINKS.
+  for (const [label, limit, wantExact] of [['mobile', MAPS_MAX_WAYPOINTS_MOBILE, 15], ['desktop', MAPS_MAX_WAYPOINTS_OTHER, 22]] as const) {
+    let exact = 0;
+    const wrong: string[] = [];
+    const inexact: string[] = [];
+    for (const r of CURATED) {
+      const p = selectWaypoints([...r.path], limit);
+      if (p.waypoints.length > limit) wrong.push(`${r.id}: ${p.waypoints.length} waypoints`);
+      if (p.risky) wrong.push(`${r.id}: mapsRisky`);
+      if (p.exact) exact++;
+      else inexact.push(r.id);
+    }
+    check('A23', `${label} limit ${limit}: ${wantExact} of 23 curated routes exact, none risky, at most ${limit} pins` + (label === 'desktop' ? ' (R19 is the only inexact one)' : ''), exact === wantExact && wrong.length === 0 && (label === 'mobile' || inexact.join() === 'R19'), `${exact} exact; inexact ${inexact.join(' ')}` + (wrong.length ? `; ${wrong.join('; ')}` : ''));
   }
-  check('A11', `every curated route: at most ${MAPS_MAX_WAYPOINTS} waypoints, and exact or flagged approximate`, wrong.length === 0, `${exact} exact, ${approx.length} approximate (${approx.join(' ')})` + (wrong.length ? `; ${wrong.join('; ')}` : ''));
+  // A synthetic walk whose only shortest path uses a barrier link is flagged risky.
+  const sim = new Map<string, { id: string; to: string; meters: number }[]>();
+  const link = (id: string, a: string, b: string, m: number) => {
+    sim.set(a, [...(sim.get(a) ?? []), { id, to: b, meters: m }]);
+    sim.set(b, [...(sim.get(b) ?? []), { id, to: a, meters: m }]);
+  };
+  link('E1', 'P', 'Q', 100);
+  link('E2', 'Q', 'R', 100);
+  link('B9', 'P', 'R', 50);
+  const risky = chooseWaypoints(['P', 'Q', 'R'], ['E1', 'E2'], (n) => sim.get(n) ?? [], () => [40.8, -73.63], (id) => id.startsWith('B'), 0);
+  check('A23', 'a synthetic route whose only shortest path uses a barrier link is flagged risky', !risky.exact && risky.usesBarrier, JSON.stringify(risky));
+  check('A23', 'pin limits: 3 on phones and iPadOS-as-Mac, 9 elsewhere', mapsMaxWaypoints('Mozilla/5.0 (iPhone)', 5) === 3 && mapsMaxWaypoints('Mozilla/5.0 (Linux; Android 14) Mobile', 5) === 3 && mapsMaxWaypoints('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 5) === 3 && mapsMaxWaypoints('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 0) === 9 && mapsMaxWaypoints('Mozilla/5.0 (Windows NT 10.0)', 0) === 9, 'ok');
 
-  // Links
-  const r04 = [...CURATED.find((c) => c.id === 'R04')!.path];
-  const w = selectWaypoints(r04).waypoints;
-  const link = mapsLink(r04, w);
+  // A26 and the links
+  const r04 = pathOf('R04');
+  const w = selectWaypoints(r04, MAPS_MAX_WAYPOINTS_OTHER).waypoints;
+  const url = mapsLink(r04, w);
   const withOrigin = mapsLink(r04, w, { startFromHome: true });
   const streets = /Birch|Elm|Chestnut|Sycamore|Cypress|Drive|Road|Lane/;
-  check('A11', 'deep link: walking, Home coordinates as destination, pipe-encoded waypoints, no origin, no address', link.startsWith('https://www.google.com/maps/dir/?api=1&') && link.includes('destination=40.80055,-73.62756') && link.includes('travelmode=walking') && (w.length < 2 || link.includes('%7C')) && !link.includes('origin=') && !streets.test(link), link.replace('https://www.google.com/maps/dir/', '…/'));
-  check('A11', '"Start from Home" adds origin with the Home coordinates', withOrigin.includes('origin=40.80055,-73.62756'), 'origin present');
+  const n09 = pathOf('N09');
+  const nine = selectWaypoints(n09, MAPS_MAX_WAYPOINTS_OTHER).waypoints;
+  const nineUrl = mapsLink(n09, nine);
+  check('A26', 'coordinates only, no address, travelmode=walking, Home as destination, at most the limit\'s pins, pipes as %7C', url.startsWith('https://www.google.com/maps/dir/?api=1&') && url.includes('destination=40.800550%2C-73.627560') && url.includes('travelmode=walking') && !url.includes('origin=') && !streets.test(url) && nine.length <= MAPS_MAX_WAYPOINTS_OTHER && nine.length >= 2 && nineUrl.includes('%7C') && !nineUrl.includes('|'), `${nine.length} pins; ${nineUrl.replace('https://www.google.com/maps/dir/', '…/').slice(0, 140)}`);
+  check('A26', '"Start from Home" adds origin with the Home coordinates; buildMapsUrl matches', withOrigin.includes('origin=40.800550%2C-73.627560') && buildMapsUrl([40.8, -73.6], []) === 'https://www.google.com/maps/dir/?api=1&destination=40.800000%2C-73.600000&travelmode=walking', 'origin present');
   const oneWayRoute = getPool().oneWay[0];
-  const owLink = mapsLink(oneWayRoute.path, selectWaypoints(oneWayRoute.path).waypoints);
+  const owLink = mapsLink(oneWayRoute.path, selectWaypoints(oneWayRoute.path, MAPS_MAX_WAYPOINTS_MOBILE).waypoints);
   const end = oneWayRoute.path[oneWayRoute.path.length - 1];
-  check('A11', 'one-way link ends at the finish, not Home', owLink.includes(`destination=${NODES[end as keyof typeof NODES].lat},${NODES[end as keyof typeof NODES].lon}`) && !owLink.includes('destination=40.80055,-73.62756'), end);
-  check('A11', 'no Embed URL without a key; with one it is a walking directions URL', embedUrl(r04, w, undefined) === null && (embedUrl(r04, w, 'K') ?? '').includes('/embed/v1/directions?key=K') && (embedUrl(r04, w, 'K') ?? '').includes('mode=walking'), 'ok');
+  const endNode = NODES[end as keyof typeof NODES];
+  check('A26', 'one-way link ends at the finish, not Home', owLink.includes(`destination=${endNode.lat.toFixed(6)}%2C${endNode.lon.toFixed(6)}`) && !owLink.includes('destination=40.800550'), end);
+  check('A26', 'no Embed URL without a key; with one it is a walking directions URL', embedUrl(r04, w, undefined) === null && (embedUrl(r04, w, 'K') ?? '').includes('/embed/v1/directions?key=K') && (embedUrl(r04, w, 'K') ?? '').includes('mode=walking'), 'ok');
+  check('A23', 'simulate() runs on legal segments plus barrier links and reproduces an exact leg', same(simulate(['HOME', 'BIRCH_ELM']), ['HOME', 'BIRCH_ELM']) && BARRIER_LINKS.length === 5, `${BARRIER_LINKS.length} barrier links`);
 
-  // Directions
+  // A17 and A18: crossing and turn-back steps, and the signal minute
+  const x01Routes = CURATED.filter((c) => (c.path as readonly string[]).includes('GCX_E')).map((c) => c.id);
+  const stepBad: string[] = [];
+  for (const c of CURATED) {
+    const steps = buildDirections([...c.path]);
+    const cross = steps.filter((s) => s.kind === 'crossing');
+    const uses = c.path.some((n, i) => i > 0 && [n, c.path[i - 1]].sort().join() === 'GCX_E,GC_MIDWOOD');
+    const wantCross = c.path.slice(1).filter((n, i) => [n, c.path[i]].sort().join() === 'GCX_E,GC_MIDWOOD').length;
+    if (uses ? cross.length !== wantCross : cross.length !== 0) stepBad.push(`${c.id}: ${cross.length} crossing steps, wanted ${wantCross}`);
+    for (const s of cross) {
+      if (s.street !== CROSSING_TITLE || s.right !== '+1 min' || !s.notes.some((n) => n.text === CROSSING_DETAIL && n.caution) || !/^From .+ to .+$/.test(s.sub ?? '')) stepBad.push(`${c.id}: crossing step text`);
+    }
+    const idx = steps.map((s, i) => (s.kind === 'crossing' ? i : -1)).filter((i) => i >= 0);
+    for (const i of idx) if (steps[i - 1]?.kind === 'crossing' || steps[i + 1]?.kind === 'crossing' || steps[i - 1]?.street === steps[i + 1]?.street) stepBad.push(`${c.id}: crossing merged or doubled at step ${i + 1}`);
+  }
+  const n07 = buildDirections(pathOf('N07'));
+  const toLake = n07.find((s) => s.kind === 'crossing');
+  const back = n07.filter((s) => s.kind === 'crossing')[1];
+  const r02 = buildDirections(pathOf('R02'));
+  const turnBack = r02.find((s) => s.kind === 'turnaround' && /Elm Drive/.test(s.street));
+  check('A17', `every route that uses X01 (${x01Routes.length}) has one separate crossing step per use with the §8.2 title, detail and "+1 min"; routes without X01 have none`, stepBad.length === 0 && x01Routes.length === 5 && toLake?.sub === 'From Midwood Cross to Lakeville Court' && back?.sub === 'From Lakeville Court to Midwood Cross', stepBad.slice(0, 3).join('; ') || `${toLake?.sub}; ${back?.sub}`);
+  check('A17', 'an out-and-back that ends at a terminus has the turn-back step', turnBack?.street === "Turn back at the end of Elm Drive. Glen Cove Road is ahead; this app doesn't walk along it.", turnBack?.street ?? 'missing');
+  check('A17', '"Copy steps" text carries the crossing and the turn-back steps', stepsToText('x', 'y', n07).includes('Cross Glen Cove Road at the signal') && stepsToText('x', 'y', r02).includes('Turn back at the end of Elm Drive'), 'ok');
+  const n07Stats = computeStats(pathOf('N07'));
+  check('A18', "N07's time at steady pace equals its Min* (37) and includes the two minutes of waiting", Math.round(minutesFor(n07Stats, 'steady')) === 37 && near(minutesFor(n07Stats, 'steady') - (n07Stats.miles * 20 + 0.03 * n07Stats.ascentFt), 2, 1e-9), `${minutesFor(n07Stats, 'steady').toFixed(2)} min`);
+
   const bad: string[] = [];
   let turnarounds = 0;
   for (const c of CURATED) {
@@ -354,7 +495,7 @@ function phase4() {
     if (!steps.every((s) => s.street.length > 0)) bad.push(`${c.id}: empty street`);
     if (!stepsToText(c.name, 'x', steps).includes('1. Head out of Home onto')) bad.push(`${c.id}: copy text`);
   }
-  check('X4', 'directions for all 22 curated routes: start at Home, arrive Home, distances add up, one turnaround per reversal', bad.length === 0, bad.slice(0, 3).join('; ') || `${turnarounds} turnaround steps`);
+  check('X4', 'directions for all 23 curated routes: start at Home, arrive Home, distances add up, one turnaround per reversal', bad.length === 0, bad.slice(0, 3).join('; ') || `${turnarounds} turnaround steps`);
   const words = [turnWord(0), turnWord(50), turnWord(-50), turnWord(80), turnWord(-80), turnWord(170)];
   check('X4', 'turn words: continue, bear, turn, turn back; softer word near a threshold', words.join(' | ') === 'Continue onto | Bear right onto | Bear left onto | Turn right onto | Turn left onto | Turn back onto' && turnWord(70) === 'Bear right onto' && turnWord(140) === 'Turn right onto', words.join(' | '));
   check('X4', 'distance display: feet under 0.1 mi, miles otherwise', fmtStepDistance(97.4) === 'about 300 ft' && fmtStepDistance(279.3) === '0.2 mi' && fmtStepDistance(20) === 'about 50 ft', `${fmtStepDistance(97.4)}, ${fmtStepDistance(279.3)}, ${fmtStepDistance(20)}`);
@@ -374,21 +515,35 @@ async function phase5() {
     return c.ok ? 'ACCEPTED' : c.error;
   };
 
-  // A12
+  // A20
   const notHome = reject(['BIRCH_ELM', 'HOME', 'BIRCH_SYC', 'HOME'], ask('a walk'));
-  const jump = reject(['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'], ask('a walk'));
+  const jump = reject(['HOME', 'CEDARMERE', 'HOME', 'BIRCH_ELM', 'HOME'], ask('a walk'));
   const ghost = reject(['HOME', 'BIRCH_ELM', 'ATLANTIS', 'BIRCH_ELM', 'HOME'], ask('a walk'));
-  const ten = [...R('R17'), ...R('R14').slice(1)];
+  const ten = [...R('N06'), ...R('N04').slice(1)];
   const tenMi = milesOf(ten);
-  const tooLong = reject(ten, ask('about 2 miles'));
-  const sixVsTwo = reject(R('R17'), ask('about 2 miles'));
-  check('A12', 'rejects a path that does not start at HOME', /start at HOME/.test(notHome), notHome);
-  check('A12', 'rejects a non-adjacent pair', /does not exist/.test(jump), jump);
-  check('A12', 'rejects an unknown node', /Unknown node ATLANTIS/.test(ghost), ghost);
-  check('A12', `rejects a ${tenMi.toFixed(1)} mi walk when the request says "about 2 miles" (and a 6 mi one by the 30% rule)`, tooLong !== 'ACCEPTED' && /requested about 2/.test(sixVsTwo), `${tooLong}; ${sixVsTwo}`);
+  const tooLong = reject(ten, ask('about 2 miles', { returnHome: false }));
+  const sixVsTwo = reject(R('N06'), ask('about 2 miles', { returnHome: false }));
+  check('A20', 'rejects a path that does not start at HOME', /start at HOME/.test(notHome), notHome);
+  check('A20', 'rejects a non-adjacent pair', /does not exist/.test(jump), jump);
+  check('A20', 'rejects an unknown node', /Unknown node ATLANTIS/.test(ghost), ghost);
+  check('A20', `rejects a ${tenMi.toFixed(1)} mi walk when the request says "about 2 miles" (and a 6 mi one by the 30% rule)`, tooLong !== 'ACCEPTED' && /requested about 2/.test(sixVsTwo), `${tooLong}; ${sixVsTwo}`);
+  const threeX = ['HOME', 'BIRCH_ELM', 'WALNUT_ELM', 'ELM_PINE', 'PINE_TEAK', 'PINE_N1', 'PINE_MID', 'GC_MIDWOOD', 'GCX_E', 'GC_MIDWOOD', 'GCX_E', 'GC_MIDWOOD', 'PINE_MID', 'PINE_N1', 'PINE_TEAK', 'ELM_PINE', 'WALNUT_ELM', 'BIRCH_ELM', 'HOME'];
+  const throughEnd = ['HOME', 'BIRCH_ELM', 'WALNUT_ELM', 'ELM_PINE', 'ELM_GC', 'GC_MIDWOOD', 'GCX_E', 'GC_MIDWOOD', 'ELM_GC', 'ELM_PINE', 'WALNUT_ELM', 'BIRCH_ELM', 'HOME'];
+  const rThree = reject(threeX, ask('a walk across the signal'));
+  const rEnd = reject(throughEnd, ask('a walk'));
+  check('A20', 'rejects a path with three crossings, and a path that continues through a terminus', /crossings|limit/.test(rThree) && /Segment between ELM_GC and GC_MIDWOOD does not exist/.test(rEnd), `${rThree}; ${rEnd}`);
   const okPlain = checkPlan({ ...body, path: R('R04') }, ask('a gentle loop'));
   const okNumber = checkPlan({ ...body, path: R('R04') }, ask('about 1 mile'));
-  check('A12', "accepts R04's path, with and without a number in the note", okPlain.ok && okNumber.ok, `R04 = ${milesOf(R('R04')).toFixed(2)} mi`);
+  const okN07 = checkPlan({ ...body, path: R('N07') }, ask('a walk through East Hills'));
+  check('A20', "accepts R04's path, with and without a number in the note, and N07's path", okPlain.ok && okNumber.ok && okN07.ok, `R04 = ${milesOf(R('R04')).toFixed(2)} mi; N07 ${okN07.ok ? 'accepted' : 'rejected'}`);
+  const sysP = buildSystemPrompt();
+  const injected = (text: string) => {
+    const c = checkPlan({ ...body, path: R('R04') }, ask(text));
+    return c.ok ? (c.plan.caveat ?? '') : 'REJECTED';
+  };
+  check('A20', 'the system prompt carries the hard rules; the caveat regex fires for "walk down Northern Blvd" and "along Glen Cove Road" and not for "Old Northern Boulevard"',
+    sysP.includes('Never route along Glen Cove Road or Northern Boulevard') && sysP.includes('segment X01') && !/museum/i.test(sysP) && FORBIDDEN_ASK.test('walk down Northern Blvd') && FORBIDDEN_ASK.test('along Glen Cove Road') && !FORBIDDEN_ASK.test('Old Northern Boulevard') &&
+      injected('walk down Northern Blvd') === "I don't route along Glen Cove Road or Northern Boulevard." && injected('along Glen Cove Road') === "I don't route along Glen Cove Road or Northern Boulevard." && injected('Old Northern Boulevard please') === '', `${injected('walk down Northern Blvd')}`);
 
   // The rest of §13.5 and the parsing helper
   const pp = checkPlan({ ...body, path: R('R04'), pause_points: ['LIBRARY', 'CYP_ELM', 'BIRCH_SYC', 'ELM_W'] }, ask('x'));
@@ -398,8 +553,8 @@ async function phase5() {
   const near2 = (a: number | undefined, b: number) => a !== undefined && Math.abs(a - b) < 0.05;
   const one = (x: Span | undefined, v: number) => !!x && near2(x.lo, v) && near2(x.hi, v);
   check('X5', 'distance and time parsing: 3 miles, 5k, 45 minutes, an hour, an hour and a half, a 3-mile walk', one(t('3 miles').miles, 3) && one(t('5k').miles, 3.11) && one(t('about 45 minutes').minutes, 45) && one(t('an hour or so').minutes, 60) && one(t('an hour and a half').minutes, 90) && one(t('1.5 hours').minutes, 90) && one(t('half an hour').minutes, 30) && one(t('a 3-mile walk').miles, 3) && one(t('a 30-minute walk').minutes, 30) && one(t('1 hour and 15 minutes').minutes, 75) && t('I need to stop thinking').minutes === undefined && t('I need to stop thinking').miles === undefined, JSON.stringify([t('5k'), t('an hour and a half')]));
-  const lib = ['HOME', 'BIRCH_SYC', 'SYC_FIR', 'FIR_CHEST', 'GREEN_CHEST', 'CHEST_NB', 'NB_MUSEUM', 'NB_BEECH', 'NB_WITTES', 'WITTES_BRYANT', 'BRYANT_ON', 'ON_EBWAY', 'LIBRARY'];
-  check('X5', 'one-way: a walk finishing at the library passes only when the box is unchecked; a junction finish never does', checkPlan({ ...body, path: lib }, ask('x', { returnHome: false })).ok && !checkPlan({ ...body, path: lib }, ask('x', { returnHome: true })).ok && !checkPlan({ ...body, path: lib.slice(0, 6) }, ask('x', { returnHome: false })).ok, 'ok');
+  const lib = [...composeOneWay().find((w) => w.path[w.path.length - 1] === 'LIBRARY')!.path];
+  check('X5', 'one-way: a walk finishing at the library passes only when the box is unchecked; a junction finish never does', checkPlan({ ...body, path: lib }, ask('x', { returnHome: false })).ok && !checkPlan({ ...body, path: lib }, ask('x', { returnHome: true })).ok && !checkPlan({ ...body, path: lib.slice(0, 3) }, ask('x', { returnHome: false })).ok, 'ok');
 
   // Pipeline with a fake client (no key, no network)
   const message = (content: unknown[]) => ({ id: 'm', type: 'message', role: 'assistant', model: 'fake', content, stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } }) as unknown as Anthropic.Message;
@@ -418,7 +573,7 @@ async function phase5() {
   };
   const good = use({ ...body, path: R('R04') });
   // 'mixed' says nothing useful, so the fallback reads the note's keywords (§13.5.6).
-  const bad = use({ ...body, mood: 'mixed', path: ['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'] });
+  const bad = use({ ...body, mood: 'mixed', path: ['HOME', 'CEDARMERE', 'HOME', 'BIRCH_ELM', 'HOME'] });
 
   const a = fake([good]);
   const ra = await planWalk(a.client, ask('a gentle loop'));
@@ -445,10 +600,10 @@ async function phase5() {
   check('X5', 'no tool call twice: falls back; "flat and quiet, about 30 minutes" gives a flat quiet walk of 24 - 36 min', rd.source === 'fallback' && d.calls.length === 2 && rd.mood === 'clear' && apmOf(rdStats) <= 70 && minutesFor(rdStats, 'steady') >= 24 && minutesFor(rdStats, 'steady') <= 36 && rdStats.busyShare <= 0.1, `${rd.title}: ${Math.round(minutesFor(rdStats, 'steady'))} min`);
 
   const e = await planWalk(fake([bad]).client, ask('Somewhere pretty. End at the pond if you can.'));
-  check('X5', 'fallback for "somewhere pretty, end at the pond": ponder mood, passes the pond', e.mood === 'ponder' && (e.path.includes('VILLAGE') || e.path.includes('VIADUCT')), `${e.title}`);
+  check('X5', 'fallback for "somewhere pretty, end at the pond": ponder mood, passes the pond', e.mood === 'ponder' && e.path.includes('VILLAGE'), `${e.title}`);
   const f = await planWalk(fake([bad]).client, ask('x', { returnHome: false, prompt: 'a short walk to the library' }));
   check('X5', 'fallback honours "no need to return": library stop, and the result may be one-way', f.path.includes('LIBRARY'), `${f.title}${isOneWay(f.path) ? ' (one-way)' : ''}`);
-  const g = await planWalk(fake([use({ ...body, mood: 'ponder', path: ['HOME', 'NCMA', 'HOME', 'BIRCH_ELM', 'HOME'] })]).client, ask('go for a walk'));
+  const g = await planWalk(fake([use({ ...body, mood: 'ponder', path: ['HOME', 'CEDARMERE', 'HOME', 'BIRCH_ELM', 'HOME'] })]).client, ask('go for a walk'));
   check('X5', "fallback takes the model's own mood when it gave one", g.source === 'fallback' && g.mood === 'ponder', g.mood);
   check('X5', 'mood keywords: sweat, quiet, pretty', inferMood('I want to sweat') === 'workout' && inferMood('something calm') === 'clear' && inferMood('trees please') === 'ponder' && inferMood('x', 'ponder') === 'ponder', 'ok');
 
@@ -457,14 +612,14 @@ async function phase5() {
   const allIds = Object.keys(NODES).every((id) => sys.includes(`${id} |`)) && SEGMENTS.every((s) => sys.includes(`${s.id} |`));
   const examples = CURATED.every((c) => sys.includes(`${c.id} | ${c.name} |`));
   const user = JSON.stringify(a.calls[0].messages);
-  check('X5', 'system prompt lists all 39 nodes, 48 segments and 22 examples (no example paths), no ZIP, no Walnut', allIds && examples && !/11576|Walnut/i.test(sys) && !/HOME, BIRCH/.test(sys) && /must finish back at HOME/.test(user), `${sys.length} chars, about ${Math.round(sys.length / 4)} tokens`);
+  check('X5', 'system prompt lists all 68 nodes, 82 segments and 23 examples (no example paths), no ZIP', allIds && examples && !/11576/i.test(sys) && !/HOME, BIRCH/.test(sys) && /must finish back at HOME/.test(user), `${sys.length} chars, about ${Math.round(sys.length / 4)} tokens`);
 
   // X7: a walk that ends at HOME must be a closed loop, in the validator, the prompt and the fallback
   const outAndBack = reject(R('R08'), ask('a walk'));
-  const lollipop = reject(R('R06'), ask('a walk'));
-  const museumLoop = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['museum']) }).ranked[0].route.path;
+  const lollipop = reject(R('R07'), ask('a walk'));
+  const cedarWalk = rank({ ...defaultAnswers('ponder'), stops: new Set<Stop>(['cedarmere']) }).ranked[0].route.path;
   check('X7', 'checkPlan: an out-and-back or a lollipop is refused with the street and "closed loop"; a real loop and the unchecked box pass', /Birch Dr/.test(outAndBack) && /closed loop/.test(outAndBack) && /closed loop/.test(lollipop) && lollipop !== 'ACCEPTED' && checkPlan({ ...body, path: R('R04') }, ask('a walk')).ok && checkPlan({ ...body, path: R('R08') }, ask('a walk', { returnHome: false })).ok, outAndBack);
-  check('X7', 'checkPlan: a dead-end spur is fine for a place the note names and refused for one it does not', checkPlan({ ...body, path: museumLoop }, ask('something by the museum')).ok && /dead end/.test(reject(museumLoop, ask('a walk'))) && /closed loop/.test(reject(R('R12'), ask('the museum, please'))), reject(museumLoop, ask('a walk')));
+  check('X7', 'checkPlan: an in-and-out walk to Cedarmere or East Hills is fine when the note names it and refused when it does not', checkPlan({ ...body, path: cedarWalk }, ask('something by Cedarmere')).ok && /closed loop/.test(reject(cedarWalk, ask('a walk'))) && checkPlan({ ...body, path: R('N07') }, ask('across the signal to East Hills')).ok && /closed loop/.test(reject(R('N07'), ask('a walk'))), reject(cedarWalk, ask('a walk')));
   const retried = fake([use({ ...body, path: R('R08') }), good]);
   const rRetry = await planWalk(retried.client, ask('a gentle loop'));
   const retryMsgs = retried.calls[1]?.messages ?? [];
@@ -493,7 +648,7 @@ async function phase5() {
   const inside = CURATED.find((c) => miles(c) >= 3 && miles(c) <= 4)!;
   const runsLong = CURATED.find((c) => miles(c) > 4.6)!;
   const runsShort = CURATED.find((c) => miles(c) < 2.5)!;
-  const trip = ask('a 3-4 mile walk');
+  const trip = ask('a 3-4 mile walk', { returnHome: false });
   const longWhy = reject([...runsLong.path], trip);
   check('X6', `a ${miles(inside).toFixed(1)} mi walk fits "3-4 miles"; a ${miles(runsLong).toFixed(1)} mi one and a ${miles(runsShort).toFixed(1)} mi one are refused, with "in total"`, checkPlan({ ...body, path: [...inside.path] }, trip).ok && /in total/.test(longWhy) && /not each way/.test(longWhy) && /in total/.test(reject([...runsShort.path], trip)), longWhy);
 
@@ -552,6 +707,7 @@ async function phase5() {
 }
 
 phase1();
+rules();
 phase2();
 oneWay();
 phase4();

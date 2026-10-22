@@ -107,7 +107,11 @@ export function Directions({
 
       <div className="dir-scroll" data-scroll>
         <p className="dir-explain">{COPY.directionsHeader}</p>
-        {!plan.exact && <p className="dir-explain">{COPY.mapsMismatch}</p>}
+        {plan.risky ? (
+          <p className="dir-explain">{COPY.mapsRisky}</p>
+        ) : (
+          !plan.exact && <p className="dir-explain">{COPY.mapsMismatch}</p>
+        )}
         <ol className="dir-list" ref={list}>
           {steps.map((s, i) => (
             <li key={i}>
@@ -120,6 +124,7 @@ export function Directions({
                     {s.kind === "street" && <span className="dir-turn">{s.turn} </span>}
                     <strong>{s.street}</strong>
                   </span>
+                  {s.sub && <span className="dir-cue">{s.sub}</span>}
                   {s.cue && <span className="dir-cue">{s.cue}</span>}
                   {s.notes.map((n) => (
                     <span key={n.text} className="dir-note">
@@ -129,6 +134,12 @@ export function Directions({
                   ))}
                   {here === i ? <span className="dir-here">You are here</span> : <span className="sr-only">Tap to mark where you are</span>}
                 </span>
+                {s.kind === "crossing" && (
+                  <span className="dir-dist">
+                    <span>{s.right}</span>
+                    <span className="muted">Crossing</span>
+                  </span>
+                )}
                 {s.kind === "street" && (
                   <span className="dir-dist">
                     <span>{fmtStepDistance(s.meters)}</span>

@@ -19,9 +19,6 @@ export const COMPOSE_MAX_MILES = 7.5;
 export const PACE_MIN_PER_MILE: Record<Pace, number> = { easy: 24, steady: 20, brisk: 16.5 };
 export const CLIMB_MIN_PER_100FT = 3;
 
-/** Platform limit for Maps URL waypoints is unverified; 3 is safe everywhere (§12.2). */
-export const MAPS_MAX_WAYPOINTS = 3;
-
 export const PREMIUM_MAX_CHARS = 600;
 
 export const COPY = {
@@ -50,6 +47,9 @@ export const COPY = {
   hoursNote: 'Check posted hours before you go.',
   directionsHeader: 'Follow along here, or open it in Google Maps for live turn-by-turn.',
   mapsMismatch: 'Google may pick a slightly different path on this one. The list here is the exact route.',
+  mapsRisky: 'Google may take Glen Cove Road or Northern Boulevard between pins. Follow the Directions list instead.',
+  rulesCaveat: "I don't route along Glen Cove Road or Northern Boulevard.",
+  crossingChip: 'Crosses Glen Cove Rd at the signal',
   footer: 'Distances are approximate. Street data © OpenStreetMap contributors.',
   premiumPlaceholder: 'Describe the walk you want…',
   premiumExamples: [
